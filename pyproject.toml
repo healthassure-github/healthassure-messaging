@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "healthassure-messaging"
+version = "1.0.0.dev5"
+description = "Typed business-messaging orchestration with a Meta Cloud API provider"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = ["requests>=2.32.3,<3"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "HealthAssure" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/healthassure-github/healthassure-messaging"
+Source = "https://github.com/healthassure-github/healthassure-messaging"
+Issues = "https://github.com/healthassure-github/healthassure-messaging/issues"
+Changelog = "https://github.com/healthassure-github/healthassure-messaging/blob/main/CHANGELOG.md"
+Security = "https://github.com/healthassure-github/healthassure-messaging/security/advisories/new"
+
+[project.optional-dependencies]
+mongo = ["pymongo>=4.11.1,<5"]
+dev = [
+    "build>=1.5,<2",
+    "check-wheel-contents>=0.6,<1",
+    "mypy>=2.3,<3",
+    "ruff>=0.16,<0.17",
+    "twine>=6.2,<7",
+    "types-requests>=2.33.0.20260712,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+healthassure_messaging = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
