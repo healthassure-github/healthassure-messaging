@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "healthassure-messaging"
-version = "1.0.0.dev5"
+version = "1.0.0"
 description = "Typed business-messaging orchestration with a Meta Cloud API provider"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -13,7 +13,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "HealthAssure" }]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

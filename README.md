@@ -6,7 +6,7 @@ consent and session policy ports, idempotent dispatch state, and optional Mongo
 persistence. A Meta Cloud API provider and Meta delivery-webhook parser are
 included.
 
-Development version `1.0.0.dev5` requires Python 3.10 through 3.13.
+Stable version 1.0.0 requires Python 3.10 through 3.13.
 
 ## Installation
 

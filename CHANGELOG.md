@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.0 - 2026-08-31
+
+- Publish the first stable provider-neutral release while preserving dev5
+  runtime, API, request-schema, and dependency behavior.
+
 ## 1.0.0.dev5 - 2026-08-29
 
 - Prepare a public source-validation workflow without enabling GitHub Actions.
