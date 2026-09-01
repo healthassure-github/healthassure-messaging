@@ -23,11 +23,19 @@ SOURCE_VALIDATION_WORKFLOW = Path(".github/workflows/source-validation.yml")
 SOURCE_VALIDATION_WORKFLOW_SHA256 = (
     "fe6157b99c5074a6c02bf196f71b2df2c373cab9fd080323f1ed31096a097820"
 )
+RELEASE_MANIFEST = Path(".github/release-manifests/v1.0.0.json")
+RELEASE_VERIFIER = Path(".github/scripts/verify_frozen_release.py")
+RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
+PUBLIC_GITHUB_FILES = (
+    RELEASE_MANIFEST,
+    RELEASE_VERIFIER,
+    RELEASE_WORKFLOW,
+    SOURCE_VALIDATION_WORKFLOW,
+)
 PUBLIC_SOURCE_ROOTS = (
     Path("src/healthassure_messaging"),
     Path("tests"),
 )
-PUBLIC_WORKFLOW_FILES = (SOURCE_VALIDATION_WORKFLOW,)
 PUBLIC_TOP_LEVEL_FILES = (
     Path(".gitignore"),
     Path("CHANGELOG.md"),
@@ -45,7 +53,7 @@ PUBLIC_TEXT_SUFFIXES = {"", ".in", ".md", ".py", ".toml", ".typed", ".yml"}
 def public_source_files(project_root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
     selected = [
         project_root / relative
-        for relative in PUBLIC_TOP_LEVEL_FILES + PUBLIC_WORKFLOW_FILES
+        for relative in PUBLIC_TOP_LEVEL_FILES + PUBLIC_GITHUB_FILES
         if (project_root / relative).is_file()
     ]
     for relative_root in PUBLIC_SOURCE_ROOTS:
@@ -206,10 +214,13 @@ class PublicSurfaceTests(unittest.TestCase):
                 ("src/healthassure_messaging/module.py", "tests/test_module.py"),
             )
 
-    def test_github_tree_is_absent_or_contains_only_source_validation(self) -> None:
+    def test_github_tree_is_absent_or_contains_exact_public_controls(self) -> None:
         observed = github_files()
-        if (PROJECT_ROOT / SOURCE_VALIDATION_WORKFLOW).is_file():
-            self.assertEqual(observed, (SOURCE_VALIDATION_WORKFLOW.as_posix(),))
+        if (PROJECT_ROOT / ".github").is_dir():
+            self.assertEqual(
+                observed,
+                tuple(sorted(path.as_posix() for path in PUBLIC_GITHUB_FILES)),
+            )
         else:
             self.assertEqual(observed, ())
         self.assertFalse((PROJECT_ROOT / "RELEASING.md").exists())
@@ -279,19 +290,122 @@ class PublicSurfaceTests(unittest.TestCase):
         self.assertEqual(content.count("uses:"), 2)
         self.assertEqual(content.count("permissions:"), 1)
 
-    def test_github_inventory_rejects_any_additional_file(self) -> None:
+    def test_release_controls_have_exact_public_security_contract(self) -> None:
+        if not (PROJECT_ROOT / RELEASE_WORKFLOW).is_file():
+            self.assertEqual(github_files(), ())
+            return
+
+        manifest = (PROJECT_ROOT / RELEASE_MANIFEST).read_text(encoding="utf-8")
+        verifier = (PROJECT_ROOT / RELEASE_VERIFIER).read_text(encoding="utf-8")
+        workflow = (PROJECT_ROOT / RELEASE_WORKFLOW).read_text(encoding="utf-8")
+
+        manifest_requirements = (
+            '"artifact_source_commit": "fbc9916ee2b714f0edb29a5e503d0f3f72d223cb"',
+            '"distribution": "healthassure-messaging"',
+            '"request_schema_version": 1',
+            '"tag": "v1.0.0"',
+            '"version": "1.0.0"',
+            '"size": 42333',
+            '"size": 74346',
+            "f83d08696d27faa58f75d9f88e844bffd6f5fcb7099acfe1120b4c7b56bf8dc8",
+            "8c4bcba46e61fc78f34b01a2d7aea760426fa144cd16376014a85df5ab6b17fa",
+        )
+        for required in manifest_requirements:
+            with self.subTest(manifest_requirement=required):
+                self.assertIn(required, manifest)
+
+        verifier_requirements = (
+            'EXPECTED_REPOSITORY = "healthassure-github/healthassure-messaging"',
+            '("rev-parse", "--verify", "--quiet"',
+            '"--no-ext-diff"',
+            '"--no-textconv"',
+            '"--no-renames"',
+            'rb"100644 blob ([0-9a-f]{40})',
+            "MAX_EVENT_BYTES = 1_048_576",
+            "MAX_PYPI_JSON_BYTES = 1_048_576",
+            "NETWORK_TIMEOUT_SECONDS = 10",
+            "POSTFLIGHT_ATTEMPTS = 6",
+            "except VerificationError as error:",
+            'error_code = "verification.internal"',
+        )
+        for required in verifier_requirements:
+            with self.subTest(verifier_requirement=required):
+                self.assertIn(required, verifier)
+
+        workflow_requirements = (
+            "on:\n  release:\n    types:\n      - published\n",
+            "permissions:\n  contents: read\n  id-token: write\n",
+            "group: publish-healthassure-messaging-v1.0.0",
+            "cancel-in-progress: false",
+            "runs-on: ubuntu-24.04",
+            "timeout-minutes: 15",
+            "name: pypi-production",
+            "ref: ${{ github.workflow_sha }}",
+            "fetch-depth: 0",
+            "persist-credentials: false",
+            "if: steps.preflight.outputs.publish_needed == 'true'",
+            "timeout-minutes: 5\n        continue-on-error: true",
+            "continue-on-error: true",
+            "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+            "skip-existing: false",
+            "verbose: false",
+            "attestations: true",
+            "if: always()",
+        )
+        for required in workflow_requirements:
+            with self.subTest(workflow_requirement=required):
+                self.assertIn(required, workflow)
+
+        prohibited = (
+            "workflow_dispatch:",
+            "pull_request:",
+            "push:",
+            "schedule:",
+            "repository_dispatch:",
+            "secrets.",
+            "python -m build",
+            "python3 -m build",
+            "twine",
+            "actions/upload-artifact@",
+            "skip-existing: true",
+            "verbose: true",
+        )
+        for forbidden in prohibited:
+            with self.subTest(release_workflow_forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
+        self.assertEqual(
+            workflow.count(
+                "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
+            ),
+            1,
+        )
+
+    def test_github_inventory_rejects_missing_renamed_or_additional_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            workflow = root / SOURCE_VALIDATION_WORKFLOW
-            workflow.parent.mkdir(parents=True)
-            workflow.write_text("source validation\n", encoding="utf-8")
-            self.assertEqual(github_files(root), (SOURCE_VALIDATION_WORKFLOW.as_posix(),))
+            for relative in PUBLIC_GITHUB_FILES:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("public control\n", encoding="utf-8")
+            expected = tuple(sorted(path.as_posix() for path in PUBLIC_GITHUB_FILES))
+            self.assertEqual(github_files(root), expected)
 
-            extra = root / ".github" / "release.yml"
-            extra.write_text("release automation\n", encoding="utf-8")
+            missing = root / RELEASE_MANIFEST
+            missing.unlink()
+            self.assertNotEqual(github_files(root), expected)
+            missing.write_text("public control\n", encoding="utf-8")
+
+            renamed = root / RELEASE_VERIFIER
+            replacement = renamed.with_name("renamed.py")
+            renamed.rename(replacement)
+            self.assertNotEqual(github_files(root), expected)
+            replacement.rename(renamed)
+
+            extra = root / ".github" / "unexpected.yml"
+            extra.write_text("unexpected control\n", encoding="utf-8")
             self.assertEqual(
                 github_files(root),
-                (".github/release.yml", SOURCE_VALIDATION_WORKFLOW.as_posix()),
+                tuple(sorted((*expected, ".github/unexpected.yml"))),
             )
 
 

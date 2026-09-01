@@ -1,0 +1,80 @@
+name: Publish frozen healthassure-messaging 1.0.0
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-healthassure-messaging-v1.0.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish frozen 1.0.0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi-production
+    steps:
+      - name: Check out trusted release controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release and PyPI preflight
+        id: preflight
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_EVENT_PATH: ${{ github.event_path }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: >-
+          python3 .github/scripts/verify_frozen_release.py prepare
+          --repository-root .
+          --event-name "$RELEASE_EVENT_NAME"
+          --event-path "$RELEASE_EVENT_PATH"
+          --ref "$RELEASE_REF"
+          --repository "$RELEASE_REPOSITORY"
+          --workflow-sha "$RELEASE_WORKFLOW_SHA"
+          --artifact-directory release-assets
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Publish frozen distributions
+        id: publish
+        if: steps.preflight.outputs.publish_needed == 'true'
+        timeout-minutes: 5
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: release-assets
+          verify-metadata: true
+          skip-existing: false
+          verbose: false
+          print-hash: false
+          attestations: true
+
+      - name: Verify exact PyPI publication
+        if: always()
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_EVENT_PATH: ${{ github.event_path }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: >-
+          python3 .github/scripts/verify_frozen_release.py postflight
+          --repository-root .
+          --event-name "$RELEASE_EVENT_NAME"
+          --event-path "$RELEASE_EVENT_PATH"
+          --ref "$RELEASE_REF"
+          --repository "$RELEASE_REPOSITORY"
+          --workflow-sha "$RELEASE_WORKFLOW_SHA"
+          --artifact-directory release-assets
