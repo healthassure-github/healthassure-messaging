@@ -4,6 +4,12 @@ on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Published GitHub Release database ID
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,7 +41,9 @@ jobs:
           RELEASE_EVENT_PATH: ${{ github.event_path }}
           RELEASE_REF: ${{ github.ref }}
           RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
           RELEASE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RELEASE_GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python3 .github/scripts/verify_frozen_release.py prepare
           --repository-root .
@@ -43,6 +51,7 @@ jobs:
           --event-path "$RELEASE_EVENT_PATH"
           --ref "$RELEASE_REF"
           --repository "$RELEASE_REPOSITORY"
+          --workflow-ref "$RELEASE_WORKFLOW_REF"
           --workflow-sha "$RELEASE_WORKFLOW_SHA"
           --artifact-directory release-assets
           --github-output "$GITHUB_OUTPUT"
@@ -68,7 +77,9 @@ jobs:
           RELEASE_EVENT_PATH: ${{ github.event_path }}
           RELEASE_REF: ${{ github.ref }}
           RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
           RELEASE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RELEASE_GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python3 .github/scripts/verify_frozen_release.py postflight
           --repository-root .
@@ -76,5 +87,6 @@ jobs:
           --event-path "$RELEASE_EVENT_PATH"
           --ref "$RELEASE_REF"
           --repository "$RELEASE_REPOSITORY"
+          --workflow-ref "$RELEASE_WORKFLOW_REF"
           --workflow-sha "$RELEASE_WORKFLOW_SHA"
           --artifact-directory release-assets
