@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -195,6 +196,48 @@ def _release_payload(manifest: Any) -> dict[str, object]:
     }
 
 
+def _recovery_event_payload(release_id: object = "380237416") -> dict[str, object]:
+    return {
+        "inputs": {"release_id": release_id},
+        "repository": {"full_name": "healthassure-github/healthassure-messaging"},
+    }
+
+
+def _github_release_payload(
+    manifest: Any,
+    *,
+    tag_commit: str = "e92773c563ca5d438b25b99e15b8351bc37ee3ce",
+) -> bytes:
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "release": {
+                        "databaseId": 380237416,
+                        "isDraft": False,
+                        "isPrerelease": False,
+                        "publishedAt": "2026-09-01T00:00:00Z",
+                        "tagName": manifest.tag,
+                        "tagCommit": {"oid": tag_commit},
+                        "releaseAssets": {
+                            "totalCount": len(manifest.artifacts),
+                            "nodes": [
+                                {
+                                    "name": artifact.filename,
+                                    "size": artifact.size,
+                                    "digest": f"sha256:{artifact.sha256}",
+                                    "downloadUrl": _release_url(artifact.filename),
+                                }
+                                for artifact in manifest.artifacts
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+    ).encode()
+
+
 def _write_event(test_case: unittest.TestCase, payload: object) -> Path:
     temporary = tempfile.TemporaryDirectory()
     test_case.addCleanup(temporary.cleanup)
@@ -241,6 +284,18 @@ class FakeFetcher:
         return value
 
 
+class FakeGitHubFetcher:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[tuple[str, int, int]] = []
+
+    def __call__(self, url: str, limit: int, token: str) -> Any:
+        self.calls.append((url, limit, len(token)))
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
+
+
 def _exact_fetcher(manifest: Any, wheel: bytes, sdist: bytes) -> FakeFetcher:
     by_kind = {"wheel": wheel, "sdist": sdist}
     responses: dict[str, list[object]] = {
@@ -278,13 +333,19 @@ def _git(repository: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def _write_control_paths(repository: Path, *, missing: str | None = None) -> None:
-    for relative in verifier.CONTROL_PATHS:
+def _write_control_paths(
+    repository: Path,
+    paths: tuple[str, ...],
+    *,
+    missing: str | None = None,
+    prefix: str = "control",
+) -> None:
+    for relative in paths:
         if relative == missing:
             continue
         path = repository / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"control {relative}\n", encoding="utf-8")
+        path.write_text(f"{prefix} {relative}\n", encoding="utf-8")
 
 
 def _git_repository(
@@ -304,7 +365,7 @@ def _git_repository(
     _git(repository, "config", "user.name", "Synthetic Tester")
     _git(repository, "config", "user.email", "synthetic" + "@" + "example.invalid")
     if root:
-        _write_control_paths(repository)
+        _write_control_paths(repository, verifier.RELEASE_CONTROL_PATHS)
         _git(repository, "add", ".")
         _git(repository, "commit", "-q", "-m", "root controls")
         control = _git(repository, "rev-parse", "HEAD")
@@ -317,13 +378,17 @@ def _git_repository(
     stable = _git(repository, "rev-parse", "HEAD")
     if merge:
         _git(repository, "switch", "-q", "-c", "controls")
-        _write_control_paths(repository)
+        _write_control_paths(repository, verifier.RELEASE_CONTROL_PATHS)
         _git(repository, "add", ".")
         _git(repository, "commit", "-q", "-m", "controls")
         _git(repository, "switch", "-q", "main")
         _git(repository, "merge", "-q", "--no-ff", "controls", "-m", "merge controls")
     else:
-        _write_control_paths(repository, missing=missing)
+        _write_control_paths(
+            repository,
+            verifier.RELEASE_CONTROL_PATHS,
+            missing=missing,
+        )
         if extra:
             (repository / "extra.py").write_text("EXTRA = True\n", encoding="utf-8")
         if executable is not None:
@@ -337,6 +402,73 @@ def _git_repository(
     control = _git(repository, "rev-parse", "HEAD")
     _git(repository, "tag", "v1.0.0")
     return repository, stable, control, _manifest(source_commit=stable)
+
+
+def _recovery_git_repository(
+    test_case: unittest.TestCase,
+    *,
+    missing: str | None = None,
+    extra: bool = False,
+    executable: str | None = None,
+    symlink: str | None = None,
+    merge: bool = False,
+    root: bool = False,
+) -> tuple[Path, str, str, str, Any]:
+    temporary = tempfile.TemporaryDirectory()
+    test_case.addCleanup(temporary.cleanup)
+    repository = Path(temporary.name)
+    _git(repository, "init", "-q", "-b", "main")
+    _git(repository, "config", "user.name", "Synthetic Tester")
+    _git(repository, "config", "user.email", "synthetic" + "@" + "example.invalid")
+    if root:
+        _write_control_paths(repository, verifier.RECOVERY_CONTROL_PATHS)
+        _git(repository, "add", ".")
+        _git(repository, "commit", "-q", "-m", "root recovery")
+        recovery = _git(repository, "rev-parse", "HEAD")
+        _git(repository, "tag", "v1.0.0")
+        manifest = _manifest(source_commit="0" * 40)
+        return repository, "0" * 40, recovery, recovery, manifest
+
+    (repository / "README.md").write_text("stable source\n", encoding="utf-8")
+    _git(repository, "add", "README.md")
+    _git(repository, "commit", "-q", "-m", "stable")
+    stable = _git(repository, "rev-parse", "HEAD")
+    _write_control_paths(repository, verifier.RELEASE_CONTROL_PATHS)
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-q", "-m", "release controls")
+    release_control = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "tag", "v1.0.0")
+
+    if merge:
+        _git(repository, "switch", "-q", "-c", "recovery")
+        _write_control_paths(
+            repository,
+            verifier.RECOVERY_CONTROL_PATHS,
+            prefix="recovery",
+        )
+        _git(repository, "add", ".")
+        _git(repository, "commit", "-q", "-m", "recovery controls")
+        _git(repository, "switch", "-q", "main")
+        _git(repository, "merge", "-q", "--no-ff", "recovery", "-m", "merge recovery")
+    else:
+        _write_control_paths(
+            repository,
+            verifier.RECOVERY_CONTROL_PATHS,
+            missing=missing,
+            prefix="recovery",
+        )
+        if extra:
+            (repository / "extra.py").write_text("EXTRA = True\n", encoding="utf-8")
+        if executable is not None:
+            os.chmod(repository / executable, 0o755)
+        if symlink is not None:
+            target = repository / symlink
+            target.unlink()
+            os.symlink("target", target)
+        _git(repository, "add", ".")
+        _git(repository, "commit", "-q", "-m", "recovery controls")
+    recovery = _git(repository, "rev-parse", "HEAD")
+    return repository, stable, release_control, recovery, _manifest(source_commit=stable)
 
 
 @unittest.skipUnless(VERIFIER_AVAILABLE, "release verifier is intentionally absent from sdists")
@@ -431,6 +563,129 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
                     with self.assertRaises(verifier.VerificationError) as raised:
                         verifier.verify_git_trust(repository, manifest, control, runner)
                     self.assert_sanitized(raised.exception)
+
+    def test_exact_recovery_control_commit_passes(self) -> None:
+        repository, _, release_control, recovery, manifest = _recovery_git_repository(self)
+        with mock.patch.object(
+            verifier,
+            "EXPECTED_RECOVERY_PARENT",
+            release_control,
+        ):
+            self.assertEqual(
+                verifier.verify_git_trust(
+                    repository,
+                    manifest,
+                    recovery,
+                    event_name="workflow_dispatch",
+                ),
+                recovery,
+            )
+
+    def test_recovery_root_merge_missing_and_extra_paths_fail(self) -> None:
+        for options in (
+            {"root": True},
+            {"merge": True},
+            {"missing": verifier.RECOVERY_CONTROL_PATHS[-1]},
+            {"extra": True},
+        ):
+            repository, _, release_control, recovery, manifest = _recovery_git_repository(
+                self, **options
+            )
+            with (
+                self.subTest(options=options),
+                mock.patch.object(
+                    verifier,
+                    "EXPECTED_RECOVERY_PARENT",
+                    release_control,
+                ),
+                self.assertRaises(verifier.VerificationError) as raised,
+            ):
+                verifier.verify_git_trust(
+                    repository,
+                    manifest,
+                    recovery,
+                    event_name="workflow_dispatch",
+                )
+            self.assert_sanitized(raised.exception)
+
+    def test_recovery_non_blob_mode_and_checkout_mismatches_fail(self) -> None:
+        for options in (
+            {"executable": verifier.RECOVERY_CONTROL_PATHS[0]},
+            {"symlink": verifier.RECOVERY_CONTROL_PATHS[1]},
+        ):
+            repository, _, release_control, recovery, manifest = _recovery_git_repository(
+                self, **options
+            )
+            with (
+                self.subTest(options=options),
+                mock.patch.object(
+                    verifier,
+                    "EXPECTED_RECOVERY_PARENT",
+                    release_control,
+                ),
+                self.assertRaises(verifier.VerificationError) as raised,
+            ):
+                verifier.verify_git_trust(
+                    repository,
+                    manifest,
+                    recovery,
+                    event_name="workflow_dispatch",
+                )
+            self.assert_sanitized(raised.exception)
+
+        repository, _, release_control, recovery, manifest = _recovery_git_repository(self)
+        (repository / verifier.RECOVERY_CONTROL_PATHS[0]).write_text(
+            "checkout mismatch\n",
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(
+                verifier,
+                "EXPECTED_RECOVERY_PARENT",
+                release_control,
+            ),
+            self.assertRaises(verifier.VerificationError) as raised,
+        ):
+            verifier.verify_git_trust(
+                repository,
+                manifest,
+                recovery,
+                event_name="workflow_dispatch",
+            )
+        self.assert_sanitized(raised.exception)
+
+        repository, _, release_control, recovery, manifest = _recovery_git_repository(self)
+
+        def tree_entry_runner(
+            root: Path,
+            arguments: tuple[str, ...],
+            limit: int,
+        ) -> Any:
+            if arguments[:2] == ("ls-tree", "-z"):
+                path = arguments[-1]
+                if path == verifier.RECOVERY_CONTROL_PATHS[0]:
+                    return verifier.GitResult(
+                        0,
+                        b"040000 tree " + b"a" * 40 + b"\t" + path.encode() + b"\0",
+                    )
+            return verifier.default_git_runner(root, arguments, limit)
+
+        with (
+            mock.patch.object(
+                verifier,
+                "EXPECTED_RECOVERY_PARENT",
+                release_control,
+            ),
+            self.assertRaises(verifier.VerificationError) as tree_error,
+        ):
+            verifier.verify_git_trust(
+                repository,
+                manifest,
+                recovery,
+                tree_entry_runner,
+                event_name="workflow_dispatch",
+            )
+        self.assert_sanitized(tree_error.exception)
 
     def test_tag_workflow_and_oversized_git_output_fail(self) -> None:
         repository, _, control, manifest = _git_repository(self)
@@ -554,6 +809,246 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
                 ref="refs/tags/v1.0.0",
             )
         self.assert_sanitized(raised.exception)
+
+    def test_exact_recovery_dispatch_event_passes(self) -> None:
+        release_id = verifier.verify_recovery_event(
+            _write_event(self, _recovery_event_payload()),
+            event_name="workflow_dispatch",
+            repository=verifier.EXPECTED_REPOSITORY,
+            ref=verifier.EXPECTED_RECOVERY_REF,
+            workflow_ref=verifier.EXPECTED_RECOVERY_WORKFLOW_REF,
+        )
+        self.assertEqual(release_id, "380237416")
+
+    def test_recovery_dispatch_context_and_release_id_are_exact(self) -> None:
+        exact = _recovery_event_payload()
+        context_cases = (
+            ("release", verifier.EXPECTED_REPOSITORY, verifier.EXPECTED_RECOVERY_REF,
+             verifier.EXPECTED_RECOVERY_WORKFLOW_REF),
+            ("workflow_dispatch", "example/other", verifier.EXPECTED_RECOVERY_REF,
+             verifier.EXPECTED_RECOVERY_WORKFLOW_REF),
+            ("workflow_dispatch", verifier.EXPECTED_REPOSITORY, "refs/heads/other",
+             verifier.EXPECTED_RECOVERY_WORKFLOW_REF),
+            ("workflow_dispatch", verifier.EXPECTED_REPOSITORY,
+             verifier.EXPECTED_RECOVERY_REF,
+             "healthassure-github/healthassure-messaging/"
+             ".github/workflows/other.yml@refs/heads/main"),
+        )
+        for event_name, repository, ref, workflow_ref in context_cases:
+            with (
+                self.subTest(
+                    event_name=event_name,
+                    repository=repository,
+                    ref=ref,
+                    workflow_ref=workflow_ref,
+                ),
+                self.assertRaises(verifier.VerificationError) as raised,
+            ):
+                verifier.verify_recovery_event(
+                    _write_event(self, exact),
+                    event_name=event_name,
+                    repository=repository,
+                    ref=ref,
+                    workflow_ref=workflow_ref,
+                )
+            self.assert_sanitized(raised.exception)
+
+        invalid_inputs: tuple[object, ...] = (
+            {},
+            {"inputs": {}, "repository": exact["repository"]},
+            _recovery_event_payload(None),
+            _recovery_event_payload(380237416),
+            _recovery_event_payload(""),
+            _recovery_event_payload("380237415"),
+            {
+                "inputs": {"release_id": "380237416"},
+                "repository": {"full_name": "example/other"},
+            },
+            {
+                "inputs": {"release_id": "380237416", "extra": "value"},
+                "repository": exact["repository"],
+            },
+        )
+        for payload in invalid_inputs:
+            with (
+                self.subTest(payload_type=type(payload).__name__),
+                self.assertRaises(verifier.VerificationError) as raised,
+            ):
+                verifier.verify_recovery_event(
+                    _write_event(self, payload),
+                    event_name="workflow_dispatch",
+                    repository=verifier.EXPECTED_REPOSITORY,
+                    ref=verifier.EXPECTED_RECOVERY_REF,
+                    workflow_ref=verifier.EXPECTED_RECOVERY_WORKFLOW_REF,
+                )
+            self.assert_sanitized(raised.exception)
+
+    def test_recovery_release_api_returns_only_exact_assets(self) -> None:
+        manifest = _manifest()
+        fetcher = FakeGitHubFetcher(
+            verifier.HttpResult(200, _github_release_payload(manifest))
+        )
+        assets = verifier.fetch_recovery_release(
+            manifest,
+            "380237416",
+            "synthetic-runtime-token",
+            fetcher,
+        )
+        self.assertEqual(
+            {asset.name for asset in assets},
+            {artifact.filename for artifact in manifest.artifacts},
+        )
+        self.assertEqual(
+            fetcher.calls,
+            [
+                (
+                    verifier.GITHUB_GRAPHQL_URL,
+                    verifier.MAX_GITHUB_RELEASE_BYTES,
+                    len("synthetic-runtime-token"),
+                )
+            ],
+        )
+        self.assertNotIn("description", verifier.GITHUB_RELEASE_QUERY)
+        self.assertNotIn("body", verifier.GITHUB_RELEASE_QUERY)
+
+    def test_recovery_context_binds_event_git_and_github_release(self) -> None:
+        repository, _, release_control, recovery, manifest = _recovery_git_repository(self)
+        event = _write_event(self, _recovery_event_payload())
+        fetcher = FakeGitHubFetcher(
+            verifier.HttpResult(
+                200,
+                _github_release_payload(manifest, tag_commit=release_control),
+            )
+        )
+        with (
+            mock.patch.object(verifier, "load_manifest", return_value=manifest),
+            mock.patch.object(
+                verifier,
+                "EXPECTED_RECOVERY_PARENT",
+                release_control,
+            ),
+        ):
+            context = verifier.build_release_context(
+                repository,
+                event_name="workflow_dispatch",
+                event_path=event,
+                repository=verifier.EXPECTED_REPOSITORY,
+                ref=verifier.EXPECTED_RECOVERY_REF,
+                workflow_ref=verifier.EXPECTED_RECOVERY_WORKFLOW_REF,
+                workflow_sha=recovery,
+                github_token="synthetic-runtime-token",
+                github_fetcher=fetcher,
+            )
+        self.assertEqual(context.control_commit, recovery)
+        self.assertEqual(len(context.assets), 2)
+        self.assertEqual(len(fetcher.calls), 1)
+
+    def test_recovery_release_api_rejects_malformed_or_inexact_records(self) -> None:
+        manifest = _manifest()
+        exact = json.loads(_github_release_payload(manifest))
+        assert isinstance(exact, dict)
+        variants: list[bytes] = [b"not-json"]
+        for field, value in (
+            ("databaseId", 380237415),
+            ("isDraft", True),
+            ("isPrerelease", True),
+            ("tagName", "v2.0.0"),
+            ("publishedAt", None),
+        ):
+            payload = copy.deepcopy(exact)
+            data = payload["data"]
+            assert isinstance(data, dict)
+            repository = data["repository"]
+            assert isinstance(repository, dict)
+            release = repository["release"]
+            assert isinstance(release, dict)
+            release[field] = value
+            variants.append(json.dumps(payload).encode())
+        wrong_commit = copy.deepcopy(exact)
+        data = wrong_commit["data"]
+        assert isinstance(data, dict)
+        repository = data["repository"]
+        assert isinstance(repository, dict)
+        release = repository["release"]
+        assert isinstance(release, dict)
+        tag_commit = release["tagCommit"]
+        assert isinstance(tag_commit, dict)
+        tag_commit["oid"] = "0" * 40
+        variants.append(json.dumps(wrong_commit).encode())
+
+        wrong_digest = copy.deepcopy(exact)
+        data = wrong_digest["data"]
+        assert isinstance(data, dict)
+        repository = data["repository"]
+        assert isinstance(repository, dict)
+        release = repository["release"]
+        assert isinstance(release, dict)
+        release_assets = release["releaseAssets"]
+        assert isinstance(release_assets, dict)
+        nodes = release_assets["nodes"]
+        assert isinstance(nodes, list)
+        first = nodes[0]
+        assert isinstance(first, dict)
+        first["digest"] = "sha256:" + "0" * 64
+        variants.append(json.dumps(wrong_digest).encode())
+
+        missing_asset = copy.deepcopy(exact)
+        data = missing_asset["data"]
+        assert isinstance(data, dict)
+        repository = data["repository"]
+        assert isinstance(repository, dict)
+        release = repository["release"]
+        assert isinstance(release, dict)
+        release_assets = release["releaseAssets"]
+        assert isinstance(release_assets, dict)
+        assets = release_assets["nodes"]
+        assert isinstance(assets, list)
+        release_assets["nodes"] = assets[:1]
+        variants.append(json.dumps(missing_asset).encode())
+
+        for variant in variants:
+            fetcher = FakeGitHubFetcher(verifier.HttpResult(200, variant))
+            with (
+                self.subTest(payload_hash=hashlib.sha256(variant).hexdigest()),
+                self.assertRaises(verifier.VerificationError) as raised,
+            ):
+                verifier.fetch_recovery_release(
+                    manifest,
+                    "380237416",
+                    "synthetic-runtime-token",
+                    fetcher,
+                )
+            self.assert_sanitized(raised.exception)
+
+    def test_recovery_api_failures_and_tokens_are_sanitized(self) -> None:
+        unsafe = "unsafe synthetic API detail"
+        manifest = _manifest()
+        fetcher = FakeGitHubFetcher(OSError(unsafe))
+        with self.assertRaises(verifier.VerificationError) as raised:
+            verifier.fetch_recovery_release(
+                manifest,
+                "380237416",
+                "synthetic-runtime-token",
+                fetcher,
+            )
+        self.assertEqual(str(raised.exception), "network.github_release")
+        self.assert_sanitized(raised.exception, unsafe)
+
+        for token in ("", "contains whitespace", "line\nbreak"):
+            with (
+                self.subTest(token_length=len(token)),
+                self.assertRaises(verifier.VerificationError) as token_error,
+            ):
+                verifier.fetch_recovery_release(
+                    manifest,
+                    "380237416",
+                    token,
+                    FakeGitHubFetcher(
+                        verifier.HttpResult(200, _github_release_payload(manifest))
+                    ),
+                )
+            self.assertEqual(str(token_error.exception), "github.token")
+            self.assert_sanitized(token_error.exception, token)
 
     def test_exact_wheel_and_sdist_pass_full_artifact_validation(self) -> None:
         wheel = _wheel_bytes()
@@ -715,54 +1210,185 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
 
     def test_network_failures_are_fixed_and_unchained(self) -> None:
         unsafe = "sensitive synthetic network detail"
-        for exception in (OSError(unsafe), TimeoutError(unsafe)):
-            opener = mock.Mock()
-            opener.open.side_effect = exception
-            with (
-                self.subTest(exception_type=type(exception).__name__),
-                mock.patch.object(
-                    verifier.urllib.request, "build_opener", return_value=opener
-                ),
-                self.assertRaises(verifier.VerificationError) as raised,
-            ):
-                verifier.default_fetch("https://pypi.org/example", 100, False)
-            self.assertEqual(str(raised.exception), "network.unavailable")
-            self.assert_sanitized(raised.exception, unsafe)
+        cases = (
+            ("https://pypi.org/example", "network.pypi"),
+            (_release_url("artifact.whl"), "network.release_asset"),
+        )
+        for url, expected_code in cases:
+            for exception in (OSError(unsafe), TimeoutError(unsafe)):
+                opener = mock.Mock()
+                opener.open.side_effect = exception
+                with (
+                    self.subTest(
+                        url_hash=hashlib.sha256(url.encode()).hexdigest(),
+                        exception_type=type(exception).__name__,
+                    ),
+                    mock.patch.object(
+                        verifier.urllib.request,
+                        "build_opener",
+                        return_value=opener,
+                    ),
+                    self.assertRaises(verifier.VerificationError) as raised,
+                ):
+                    verifier.default_fetch(url, 100, False)
+                self.assertEqual(str(raised.exception), expected_code)
+                self.assert_sanitized(raised.exception, unsafe)
 
-    def test_only_one_allowlisted_release_asset_redirect_is_accepted(self) -> None:
+    def test_release_asset_redirect_delegates_to_standard_library_once(self) -> None:
         handler = verifier._SafeRedirectHandler()
         request = verifier.urllib.request.Request(
             "https://github.com/healthassure-github/healthassure-messaging/"
             "releases/download/v1.0.0/artifact.whl"
         )
-        allowed = handler.redirect_request(
-            request,
-            object(),
-            302,
-            "redirect",
-            object(),
-            "https://release-assets.githubusercontent.com/synthetic/artifact.whl?signature=value",
+        expected = verifier.urllib.request.Request(
+            "https://release-assets.githubusercontent.com/synthetic/artifact.whl"
         )
-        self.assertIsInstance(allowed, verifier.urllib.request.Request)
+        signed_url = (
+            "https://release-assets.githubusercontent.com/synthetic/"
+            "artifact.whl?signature=synthetic-value"
+        )
+        with mock.patch.object(
+            verifier.urllib.request.HTTPRedirectHandler,
+            "redirect_request",
+            return_value=expected,
+        ) as parent:
+            allowed = handler.redirect_request(
+                request,
+                io.BytesIO(),
+                302,
+                "redirect",
+                Message(),
+                signed_url,
+            )
+        self.assertIs(allowed, expected)
+        parent.assert_called_once()
+        self.assertEqual(handler.__dict__, {"redirects": 1})
+        self.assertNotIn("synthetic-value", repr(handler))
+
         rejected_second = handler.redirect_request(
             request,
-            object(),
+            io.BytesIO(),
             302,
             "redirect",
-            object(),
+            Message(),
             "https://release-assets.githubusercontent.com/synthetic/second.whl",
         )
         self.assertIsNone(rejected_second)
 
-        foreign = verifier._SafeRedirectHandler().redirect_request(
-            request,
-            object(),
-            302,
-            "redirect",
-            object(),
-            "https://example.invalid/artifact.whl",
+    def test_release_asset_redirect_rejects_unsafe_boundaries(self) -> None:
+        safe_original = (
+            "https://github.com/healthassure-github/healthassure-messaging/"
+            "releases/download/v1.0.0/artifact.whl"
         )
-        self.assertIsNone(foreign)
+        safe_target = (
+            "https://release-assets.githubusercontent.com/synthetic/"
+            "artifact.whl?signature=synthetic-value"
+        )
+        cases = (
+            (safe_original.replace("github.com", "example.invalid"), safe_target, 302),
+            (safe_original.replace("https://", "http://"), safe_target, 302),
+            (
+                safe_original.replace("github.com", "user:pass" + "@" + "github.com"),
+                safe_target,
+                302,
+            ),
+            (safe_original.replace("github.com", "github.com:444"), safe_target, 302),
+            (safe_original + "#fragment", safe_target, 302),
+            (safe_original, safe_target.replace("release-assets.githubusercontent.com",
+                                                 "example.invalid"), 302),
+            (safe_original, safe_target.replace("https://", "http://"), 302),
+            (
+                safe_original,
+                safe_target.replace(
+                    "release-assets.githubusercontent.com",
+                    "user:pass" + "@" + "release-assets.githubusercontent.com",
+                ),
+                302,
+            ),
+            (safe_original, safe_target.replace("release-assets.githubusercontent.com",
+                                                 "release-assets.githubusercontent.com:444"), 302),
+            (safe_original, safe_target + "#fragment", 302),
+            (safe_original, safe_target, 304),
+        )
+        for original, target, code in cases:
+            with self.subTest(
+                original_hash=hashlib.sha256(original.encode()).hexdigest(),
+                target_hash=hashlib.sha256(target.encode()).hexdigest(),
+                code=code,
+            ):
+                rejected = verifier._SafeRedirectHandler().redirect_request(
+                    verifier.urllib.request.Request(original),
+                    io.BytesIO(),
+                    code,
+                    "redirect",
+                    Message(),
+                    target,
+                )
+                self.assertIsNone(rejected)
+
+    def test_github_api_network_failure_is_fixed_and_unchained(self) -> None:
+        unsafe = "signed-query=synthetic-sensitive-detail"
+        opener = mock.Mock()
+        opener.open.side_effect = OSError(unsafe)
+        with (
+            mock.patch.object(
+                verifier.urllib.request,
+                "build_opener",
+                return_value=opener,
+            ),
+            self.assertRaises(verifier.VerificationError) as raised,
+        ):
+            verifier.default_github_fetch(
+                verifier.GITHUB_GRAPHQL_URL,
+                100,
+                "synthetic-runtime-token",
+            )
+        self.assertEqual(str(raised.exception), "network.github_release")
+        self.assert_sanitized(raised.exception, unsafe)
+
+    def test_github_api_uses_fixed_bounded_projection_and_ephemeral_token(self) -> None:
+        response = mock.MagicMock()
+        response.status = 200
+        response.headers = Message()
+        response.read.return_value = b"{}"
+        response.__enter__.return_value = response
+        checked = False
+
+        def open_request(request: Any, *, timeout: float) -> Any:
+            nonlocal checked
+            self.assertEqual(timeout, verifier.NETWORK_TIMEOUT_SECONDS)
+            self.assertEqual(request.full_url, verifier.GITHUB_GRAPHQL_URL)
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(
+                json.loads(request.data),
+                {"query": verifier.GITHUB_RELEASE_QUERY},
+            )
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer synthetic-runtime-token",
+            )
+            checked = True
+            return response
+
+        opener = mock.Mock()
+        opener.open.side_effect = open_request
+        with mock.patch.object(
+            verifier.urllib.request,
+            "build_opener",
+            return_value=opener,
+        ) as build_opener:
+            result = verifier.default_github_fetch(
+                verifier.GITHUB_GRAPHQL_URL,
+                100,
+                "synthetic-runtime-token",
+            )
+        self.assertTrue(checked)
+        self.assertEqual(result, verifier.HttpResult(200, b"{}"))
+        self.assertIsInstance(
+            build_opener.call_args.args[0],
+            verifier._RejectRedirectHandler,
+        )
+        self.assertNotIn("synthetic-runtime-token", repr(opener.mock_calls))
 
     def test_failure_codes_do_not_retain_unsafe_details(self) -> None:
         unsafe = "recipient token raw exception"

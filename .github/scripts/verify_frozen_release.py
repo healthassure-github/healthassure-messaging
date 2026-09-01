@@ -8,6 +8,7 @@ import ast
 import email
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -25,19 +26,34 @@ from enum import Enum
 from http.client import HTTPException
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 EXPECTED_REPOSITORY = "healthassure-github/healthassure-messaging"
+EXPECTED_RECOVERY_RELEASE_ID = "380237416"
+EXPECTED_RECOVERY_PARENT = "e92773c563ca5d438b25b99e15b8351bc37ee3ce"
+EXPECTED_RECOVERY_REF = "refs/heads/main"
+EXPECTED_RECOVERY_WORKFLOW_REF = (
+    "healthassure-github/healthassure-messaging/"
+    ".github/workflows/release.yml@refs/heads/main"
+)
 MANIFEST_PATH = Path(".github/release-manifests/v1.0.0.json")
-CONTROL_PATHS = (
+RELEASE_CONTROL_PATHS = (
     ".github/release-manifests/v1.0.0.json",
     ".github/scripts/verify_frozen_release.py",
     ".github/workflows/release.yml",
     "tests/test_public_surface.py",
     "tests/test_verify_frozen_release.py",
 )
+RECOVERY_CONTROL_PATHS = (
+    ".github/scripts/verify_frozen_release.py",
+    ".github/workflows/release.yml",
+    "tests/test_public_surface.py",
+    "tests/test_verify_frozen_release.py",
+)
+CONTROL_PATHS = RELEASE_CONTROL_PATHS
 MAX_EVENT_BYTES = 1_048_576
 MAX_MANIFEST_BYTES = 16_384
+MAX_GITHUB_RELEASE_BYTES = 1_048_576
 MAX_PYPI_JSON_BYTES = 1_048_576
 MAX_ARCHIVE_ENTRIES = 512
 MAX_ARCHIVE_CONTENT_BYTES = 8_388_608
@@ -46,6 +62,14 @@ GIT_TIMEOUT_SECONDS = 10
 POSTFLIGHT_ATTEMPTS = 6
 POSTFLIGHT_DELAY_SECONDS = 10
 PYPI_VERSION_URL = "https://pypi.org/pypi/healthassure-messaging/1.0.0/json"
+GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
+GITHUB_RELEASE_QUERY = (
+    "query FrozenRelease { repository(owner: \"healthassure-github\", "
+    "name: \"healthassure-messaging\") { release(tagName: \"v1.0.0\") { "
+    "databaseId isDraft isPrerelease publishedAt tagName tagCommit { oid } "
+    "releaseAssets(first: 3) { totalCount nodes { name size digest downloadUrl } } "
+    "} } }"
+)
 HEX_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 HEX_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9_.-]+)([^;]*)(?:;(.*))?$")
@@ -129,6 +153,7 @@ class HttpResult:
 
 GitRunner = Callable[[Path, tuple[str, ...], int], GitResult]
 Fetcher = Callable[[str, int, bool], HttpResult]
+GitHubFetcher = Callable[[str, int, str], HttpResult]
 Sleeper = Callable[[float], None]
 
 
@@ -389,8 +414,20 @@ def verify_git_trust(
     manifest: ReleaseManifest,
     workflow_sha: str,
     runner: GitRunner = default_git_runner,
+    *,
+    event_name: str = "release",
 ) -> str:
     if HEX_SHA_PATTERN.fullmatch(workflow_sha) is None:
+        _fail("context.invalid")
+    if event_name == "release":
+        expected_parent = manifest.artifact_source_commit
+        expected_tag_commit = workflow_sha
+        control_paths = RELEASE_CONTROL_PATHS
+    elif event_name == "workflow_dispatch":
+        expected_parent = EXPECTED_RECOVERY_PARENT
+        expected_tag_commit = EXPECTED_RECOVERY_PARENT
+        control_paths = RECOVERY_CONTROL_PATHS
+    else:
         _fail("context.invalid")
     tag_commit = _commit_from_result(
         runner(
@@ -404,7 +441,7 @@ def verify_git_trust(
         runner(repository_root, ("rev-parse", "--verify", "--quiet", "HEAD^{commit}"), 41),
         "git.checkout",
     )
-    if tag_commit != workflow_sha or head_commit != workflow_sha:
+    if tag_commit != expected_tag_commit or head_commit != workflow_sha:
         _fail("git.checkout")
     parent = _commit_from_result(
         runner(
@@ -414,7 +451,7 @@ def verify_git_trust(
         ),
         "git.release_control_parent",
     )
-    if parent != manifest.artifact_source_commit:
+    if parent != expected_parent:
         _fail("git.release_control_parent")
     second_parent = runner(
         repository_root,
@@ -428,7 +465,7 @@ def verify_git_trust(
     if second_parent.returncode != 1:
         _fail("git.unavailable")
 
-    for path in CONTROL_PATHS:
+    for path in control_paths:
         changed = runner(
             repository_root,
             (
@@ -445,7 +482,7 @@ def verify_git_trust(
             0,
         )
         _quiet_result(changed, 1, "git.release_control_paths")
-    exclusions = tuple(f":(top,exclude,literal){path}" for path in CONTROL_PATHS)
+    exclusions = tuple(f":(top,exclude,literal){path}" for path in control_paths)
     other_changes = runner(
         repository_root,
         (
@@ -464,7 +501,7 @@ def verify_git_trust(
     )
     _quiet_result(other_changes, 0, "git.release_control_paths")
 
-    for path in CONTROL_PATHS:
+    for path in control_paths:
         entry = runner(repository_root, ("ls-tree", "-z", workflow_sha, "--", path), 512)
         if entry.returncode != 0:
             _fail("git.release_control_entry")
@@ -500,17 +537,60 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         if (
             self.redirects != 1
             or code not in {301, 302, 303, 307, 308}
-            or original.scheme != "https"
-            or original.hostname != "github.com"
-            or target.scheme != "https"
-            or target.hostname != "release-assets.githubusercontent.com"
-            or target.username is not None
-            or target.password is not None
-            or target.port is not None
-            or target.fragment
+            or not _is_safe_https_endpoint(original, "github.com")
+            or not _is_safe_https_endpoint(
+                target, "release-assets.githubusercontent.com"
+            )
         ):
             return None
-        return urllib.request.Request(new_url, headers=dict(request.header_items()))
+        return super().redirect_request(
+            request,
+            cast(Any, file_pointer),
+            code,
+            message,
+            cast(Any, headers),
+            new_url,
+        )
+
+
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(  # type: ignore[override]
+        self,
+        request: urllib.request.Request,
+        file_pointer: object,
+        code: int,
+        message: str,
+        headers: object,
+        new_url: str,
+    ) -> None:
+        return None
+
+
+def _is_safe_https_endpoint(parts: urllib.parse.SplitResult, hostname: str) -> bool:
+    invalid_port = False
+    port: int | None = None
+    try:
+        port = parts.port
+    except ValueError:
+        invalid_port = True
+    return (
+        not invalid_port
+        and parts.scheme == "https"
+        and parts.hostname == hostname
+        and parts.username is None
+        and parts.password is None
+        and port is None
+        and not parts.fragment
+    )
+
+
+def _network_failure_code(url: str) -> str:
+    hostname = urllib.parse.urlsplit(url).hostname
+    if hostname == "github.com":
+        return "network.release_asset"
+    if hostname in {"pypi.org", "files.pythonhosted.org"}:
+        return "network.pypi"
+    return "network.unavailable"
 
 
 def default_fetch(url: str, limit: int, allow_not_found: bool) -> HttpResult:
@@ -541,7 +621,64 @@ def default_fetch(url: str, limit: int, allow_not_found: bool) -> HttpResult:
     if not_found:
         return HttpResult(404, b"")
     if failed or status != 200 or len(body) > limit:
-        _fail("network.unavailable")
+        _fail(_network_failure_code(url))
+    return HttpResult(status, body)
+
+
+def _validated_github_token(value: str) -> str:
+    if (
+        not value
+        or len(value) > 4096
+        or not value.isascii()
+        or any(character.isspace() or ord(character) < 0x21 for character in value)
+    ):
+        _fail("github.token")
+    return value
+
+
+def default_github_fetch(url: str, limit: int, token: str) -> HttpResult:
+    if url != GITHUB_GRAPHQL_URL:
+        _fail("github.release")
+    validated_token = _validated_github_token(token)
+    request_body = json.dumps(
+        {"query": GITHUB_RELEASE_QUERY},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    failed = False
+    status = 0
+    body = b""
+    try:
+        request = urllib.request.Request(
+            url,
+            data=request_body,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {validated_token}",
+                "Content-Type": "application/json",
+                "User-Agent": "frozen-release-verifier/1",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            method="POST",
+        )
+        opener = urllib.request.build_opener(_RejectRedirectHandler())
+        with opener.open(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
+            status = response.status
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > limit:
+                failed = True
+            else:
+                body = response.read(limit + 1)
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        OSError,
+        ValueError,
+        TimeoutError,
+        HTTPException,
+    ):
+        failed = True
+    if failed or status != 200 or len(body) > limit:
+        _fail("network.github_release")
     return HttpResult(status, body)
 
 
@@ -562,6 +699,35 @@ def _validate_release_download_url(url: str, manifest: ReleaseManifest, filename
         or parts.fragment
     ):
         _fail("release.asset")
+
+
+def _release_assets_from_record(
+    release: Mapping[str, object],
+    manifest: ReleaseManifest,
+) -> tuple[ReleaseAsset, ...]:
+    if (
+        _expect_boolean(release.get("draft"), "release.invalid")
+        or _expect_boolean(release.get("prerelease"), "release.invalid")
+        or _expect_string(release.get("tag_name"), "release.invalid") != manifest.tag
+        or not _expect_string(release.get("published_at"), "release.invalid")
+    ):
+        _fail("release.invalid")
+    expected = {artifact.filename: artifact for artifact in manifest.artifacts}
+    assets: list[ReleaseAsset] = []
+    for raw_asset in _expect_list(release.get("assets"), "release.invalid"):
+        asset = _expect_object(raw_asset, "release.asset")
+        name = _expect_string(asset.get("name"), "release.asset")
+        size = _expect_integer(asset.get("size"), "release.asset", minimum=1)
+        state = _expect_string(asset.get("state"), "release.asset")
+        download_url = _expect_string(asset.get("browser_download_url"), "release.asset")
+        spec = expected.get(name)
+        if spec is None or size != spec.size or state != "uploaded":
+            _fail("release.asset")
+        _validate_release_download_url(download_url, manifest, name)
+        assets.append(ReleaseAsset(name, size, download_url))
+    if len(assets) != len(expected) or {asset.name for asset in assets} != set(expected):
+        _fail("release.asset")
+    return tuple(sorted(assets, key=lambda item: item.name))
 
 
 def verify_release_event(
@@ -594,28 +760,138 @@ def verify_release_event(
     ):
         _fail("release.invalid")
     release = _expect_object(payload.get("release"), "release.invalid")
+    return _release_assets_from_record(release, manifest)
+
+
+def verify_recovery_event(
+    event_path: Path,
+    *,
+    event_name: str,
+    repository: str,
+    ref: str,
+    workflow_ref: str,
+) -> str:
     if (
-        _expect_boolean(release.get("draft"), "release.invalid")
-        or _expect_boolean(release.get("prerelease"), "release.invalid")
-        or _expect_string(release.get("tag_name"), "release.invalid") != manifest.tag
-        or not _expect_string(release.get("published_at"), "release.invalid")
+        event_name != "workflow_dispatch"
+        or repository != EXPECTED_REPOSITORY
+        or ref != EXPECTED_RECOVERY_REF
+        or workflow_ref != EXPECTED_RECOVERY_WORKFLOW_REF
     ):
-        _fail("release.invalid")
+        _fail("context.invalid")
+    payload = _expect_object(
+        _parse_json(
+            _read_bounded_file(event_path, MAX_EVENT_BYTES, "recovery.event"),
+            "recovery.event",
+        ),
+        "recovery.event",
+    )
+    repository_payload = _expect_object(payload.get("repository"), "recovery.event")
+    if (
+        _expect_string(repository_payload.get("full_name"), "recovery.event")
+        != EXPECTED_REPOSITORY
+    ):
+        _fail("recovery.event")
+    inputs = _expect_object(payload.get("inputs"), "recovery.input")
+    _require_exact_keys(inputs, {"release_id"}, "recovery.input")
+    release_id = _expect_string(inputs.get("release_id"), "recovery.input")
+    if release_id != EXPECTED_RECOVERY_RELEASE_ID:
+        _fail("recovery.input")
+    return release_id
+
+
+def fetch_recovery_release(
+    manifest: ReleaseManifest,
+    release_id: str,
+    token: str,
+    fetcher: GitHubFetcher = default_github_fetch,
+) -> tuple[ReleaseAsset, ...]:
+    if release_id != EXPECTED_RECOVERY_RELEASE_ID:
+        _fail("recovery.input")
+    validated_token = _validated_github_token(token)
+    failed = False
+    response: HttpResult | None = None
+    try:
+        response = fetcher(
+            GITHUB_GRAPHQL_URL,
+            MAX_GITHUB_RELEASE_BYTES,
+            validated_token,
+        )
+    except VerificationError:
+        raise
+    except Exception:
+        failed = True
+    if failed or response is None or response.status != 200:
+        _fail("network.github_release")
+    payload = _expect_object(
+        _parse_json(response.body, "github.release"),
+        "github.release",
+    )
+    _require_exact_keys(payload, {"data"}, "github.release")
+    data = _expect_object(payload.get("data"), "github.release")
+    _require_exact_keys(data, {"repository"}, "github.release")
+    repository = _expect_object(data.get("repository"), "github.release")
+    _require_exact_keys(repository, {"release"}, "github.release")
+    release = _expect_object(repository.get("release"), "github.release")
+    _require_exact_keys(
+        release,
+        {
+            "databaseId",
+            "isDraft",
+            "isPrerelease",
+            "publishedAt",
+            "releaseAssets",
+            "tagCommit",
+            "tagName",
+        },
+        "github.release",
+    )
+    tag_commit = _expect_object(release.get("tagCommit"), "github.release")
+    _require_exact_keys(tag_commit, {"oid"}, "github.release")
+    if (
+        _expect_integer(release.get("databaseId"), "github.release", minimum=1)
+        != int(EXPECTED_RECOVERY_RELEASE_ID)
+        or _expect_boolean(release.get("isDraft"), "github.release")
+        or _expect_boolean(release.get("isPrerelease"), "github.release")
+        or not _expect_string(release.get("publishedAt"), "github.release")
+        or _expect_string(release.get("tagName"), "github.release") != manifest.tag
+        or _expect_string(tag_commit.get("oid"), "github.release")
+        != EXPECTED_RECOVERY_PARENT
+    ):
+        _fail("github.release")
+    release_assets = _expect_object(release.get("releaseAssets"), "github.release")
+    _require_exact_keys(release_assets, {"nodes", "totalCount"}, "github.release")
     expected = {artifact.filename: artifact for artifact in manifest.artifacts}
+    total_count = _expect_integer(
+        release_assets.get("totalCount"),
+        "github.release",
+        minimum=0,
+    )
+    nodes = _expect_list(release_assets.get("nodes"), "github.release")
+    if total_count != len(expected) or len(nodes) != len(expected):
+        _fail("github.release")
     assets: list[ReleaseAsset] = []
-    for raw_asset in _expect_list(release.get("assets"), "release.invalid"):
-        asset = _expect_object(raw_asset, "release.asset")
-        name = _expect_string(asset.get("name"), "release.asset")
-        size = _expect_integer(asset.get("size"), "release.asset", minimum=1)
-        state = _expect_string(asset.get("state"), "release.asset")
-        download_url = _expect_string(asset.get("browser_download_url"), "release.asset")
+    observed: set[str] = set()
+    for raw_asset in nodes:
+        asset = _expect_object(raw_asset, "github.release")
+        _require_exact_keys(
+            asset,
+            {"digest", "downloadUrl", "name", "size"},
+            "github.release",
+        )
+        name = _expect_string(asset.get("name"), "github.release")
         spec = expected.get(name)
-        if spec is None or size != spec.size or state != "uploaded":
-            _fail("release.asset")
+        if spec is None or name in observed:
+            _fail("github.release")
+        observed.add(name)
+        size = _expect_integer(asset.get("size"), "github.release", minimum=1)
+        digest = _expect_string(asset.get("digest"), "github.release")
+        download_url = _expect_string(asset.get("downloadUrl"), "github.release")
+        if size != spec.size or digest != f"sha256:{spec.sha256}":
+            _fail("github.release")
         _validate_release_download_url(download_url, manifest, name)
         assets.append(ReleaseAsset(name, size, download_url))
-    if len(assets) != len(expected) or {asset.name for asset in assets} != set(expected):
-        _fail("release.asset")
+    if observed != set(expected):
+        _fail("github.release")
     return tuple(sorted(assets, key=lambda item: item.name))
 
 
@@ -1002,20 +1278,53 @@ def build_release_context(
     event_path: Path,
     repository: str,
     ref: str,
+    workflow_ref: str,
     workflow_sha: str,
+    github_token: str = "",
     runner: GitRunner = default_git_runner,
+    github_fetcher: GitHubFetcher = default_github_fetch,
 ) -> ReleaseContext:
     manifest = load_manifest(repository_root)
     if repository != EXPECTED_REPOSITORY:
         _fail("context.invalid")
-    control_commit = verify_git_trust(repository_root, manifest, workflow_sha, runner)
-    assets = verify_release_event(
-        event_path,
-        manifest,
-        event_name=event_name,
-        repository=repository,
-        ref=ref,
-    )
+    if event_name == "release":
+        control_commit = verify_git_trust(
+            repository_root,
+            manifest,
+            workflow_sha,
+            runner,
+            event_name=event_name,
+        )
+        assets = verify_release_event(
+            event_path,
+            manifest,
+            event_name=event_name,
+            repository=repository,
+            ref=ref,
+        )
+    elif event_name == "workflow_dispatch":
+        release_id = verify_recovery_event(
+            event_path,
+            event_name=event_name,
+            repository=repository,
+            ref=ref,
+            workflow_ref=workflow_ref,
+        )
+        control_commit = verify_git_trust(
+            repository_root,
+            manifest,
+            workflow_sha,
+            runner,
+            event_name=event_name,
+        )
+        assets = fetch_recovery_release(
+            manifest,
+            release_id,
+            github_token,
+            github_fetcher,
+        )
+    else:
+        _fail("context.invalid")
     return ReleaseContext(manifest, assets, control_commit)
 
 
@@ -1027,6 +1336,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--event-path", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--ref", required=True)
+    parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--workflow-sha", required=True)
     parser.add_argument("--artifact-directory", required=True)
     parser.add_argument("--github-output")
@@ -1042,7 +1352,9 @@ def _run(arguments: Sequence[str]) -> int:
         event_path=Path(options.event_path),
         repository=options.repository,
         ref=options.ref,
+        workflow_ref=options.workflow_ref,
         workflow_sha=options.workflow_sha,
+        github_token=os.environ.get("RELEASE_GITHUB_TOKEN", ""),
     )
     artifact_directory = _validated_artifact_directory(
         repository_root, options.artifact_directory
