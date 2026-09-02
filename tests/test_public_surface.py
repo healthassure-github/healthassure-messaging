@@ -316,13 +316,7 @@ class PublicSurfaceTests(unittest.TestCase):
 
         verifier_requirements = (
             'EXPECTED_REPOSITORY = "healthassure-github/healthassure-messaging"',
-            'EXPECTED_RECOVERY_RELEASE_ID = "380237416"',
-            'EXPECTED_RECOVERY_PARENT = "e92773c563ca5d438b25b99e15b8351bc37ee3ce"',
-            'EXPECTED_RECOVERY_REF = "refs/heads/main"',
-            '".github/workflows/release.yml@refs/heads/main"',
-            "RECOVERY_CONTROL_PATHS = (",
-            'GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"',
-            '"releaseAssets(first: 3) { totalCount nodes { name size digest downloadUrl } } "',
+            "RELEASE_CONTROL_PATHS = (",
             '("rev-parse", "--verify", "--quiet"',
             '"--no-ext-diff"',
             '"--no-textconv"',
@@ -330,12 +324,15 @@ class PublicSurfaceTests(unittest.TestCase):
             'rb"100644 blob ([0-9a-f]{40})',
             "return super().redirect_request(",
             "MAX_EVENT_BYTES = 1_048_576",
-            "MAX_GITHUB_RELEASE_BYTES = 1_048_576",
             "MAX_PYPI_JSON_BYTES = 1_048_576",
             "NETWORK_TIMEOUT_SECONDS = 10",
             "POSTFLIGHT_ATTEMPTS = 6",
-            'os.environ.get("RELEASE_GITHUB_TOKEN", "")',
-            'or workflow_ref != EXPECTED_RECOVERY_WORKFLOW_REF',
+            "def stage_publisher_artifacts(",
+            "verify_local_artifacts(release_directory, manifest)",
+            "_ensure_empty_artifact_directory(publisher_directory)",
+            "_write_new_file(publisher_directory / spec.filename, content)",
+            "verify_local_artifacts(publisher_directory, manifest)",
+            "candidate.parts != (expected_name,)",
             "except VerificationError as error:",
             'error_code = "verification.internal"',
         )
@@ -344,10 +341,7 @@ class PublicSurfaceTests(unittest.TestCase):
                 self.assertIn(required, verifier)
 
         workflow_requirements = (
-            "on:\n  release:\n    types:\n      - published\n  workflow_dispatch:\n"
-            "    inputs:\n      release_id:\n"
-            "        description: Published GitHub Release database ID\n"
-            "        required: true\n        type: string\n",
+            "on:\n  release:\n    types:\n      - published\n",
             "permissions:\n  contents: read\n  id-token: write\n",
             "group: publish-healthassure-messaging-v1.0.0",
             "cancel-in-progress: false",
@@ -357,13 +351,13 @@ class PublicSurfaceTests(unittest.TestCase):
             "ref: ${{ github.workflow_sha }}",
             "fetch-depth: 0",
             "persist-credentials: false",
-            "RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}",
-            "RELEASE_GITHUB_TOKEN: ${{ github.token }}",
-            '--workflow-ref "$RELEASE_WORKFLOW_REF"',
+            "--artifact-directory release-assets",
+            "--publisher-directory publisher-assets",
             "if: steps.preflight.outputs.publish_needed == 'true'",
             "timeout-minutes: 5\n        continue-on-error: true",
             "continue-on-error: true",
             "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+            "packages-dir: publisher-assets",
             "skip-existing: false",
             "verbose: false",
             "attestations: true",
@@ -378,6 +372,12 @@ class PublicSurfaceTests(unittest.TestCase):
             "push:",
             "schedule:",
             "repository_dispatch:",
+            "workflow_dispatch:",
+            "release_id",
+            "RELEASE_GITHUB_TOKEN",
+            "${{ github.token }}",
+            "api.github.com/graphql",
+            "refs/heads/main",
             "secrets.",
             "python -m build",
             "python3 -m build",
@@ -397,7 +397,9 @@ class PublicSurfaceTests(unittest.TestCase):
             ),
             1,
         )
-        self.assertEqual(workflow.count("${{ github.token }}"), 2)
+        self.assertEqual(workflow.count("packages-dir: publisher-assets"), 1)
+        self.assertEqual(workflow.count("--publisher-directory publisher-assets"), 1)
+        self.assertEqual(workflow.count("--artifact-directory release-assets"), 2)
         self.assertEqual(workflow.count("uses:"), 2)
 
     def test_github_inventory_rejects_missing_renamed_or_additional_file(self) -> None:
