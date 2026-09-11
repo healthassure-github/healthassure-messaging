@@ -23,10 +23,12 @@ SOURCE_VALIDATION_WORKFLOW = Path(".github/workflows/source-validation.yml")
 SOURCE_VALIDATION_WORKFLOW_SHA256 = (
     "fe6157b99c5074a6c02bf196f71b2df2c373cab9fd080323f1ed31096a097820"
 )
-RELEASE_MANIFEST = Path(".github/release-manifests/v1.0.0.json")
+LEGACY_RELEASE_MANIFEST = Path(".github/release-manifests/v1.0.0.json")
+RELEASE_MANIFEST = Path(".github/release-manifests/v1.1.0.json")
 RELEASE_VERIFIER = Path(".github/scripts/verify_frozen_release.py")
 RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
 PUBLIC_GITHUB_FILES = (
+    LEGACY_RELEASE_MANIFEST,
     RELEASE_MANIFEST,
     RELEASE_VERIFIER,
     RELEASE_WORKFLOW,
@@ -300,15 +302,15 @@ class PublicSurfaceTests(unittest.TestCase):
         workflow = (PROJECT_ROOT / RELEASE_WORKFLOW).read_text(encoding="utf-8")
 
         manifest_requirements = (
-            '"artifact_source_commit": "fbc9916ee2b714f0edb29a5e503d0f3f72d223cb"',
+            '"artifact_source_commit": "7d9f6d1986484ab4a0c8e2edc7abb7f247babfa2"',
             '"distribution": "healthassure-messaging"',
-            '"request_schema_version": 1',
-            '"tag": "v1.0.0"',
-            '"version": "1.0.0"',
-            '"size": 42333',
-            '"size": 74346',
-            "f83d08696d27faa58f75d9f88e844bffd6f5fcb7099acfe1120b4c7b56bf8dc8",
-            "8c4bcba46e61fc78f34b01a2d7aea760426fa144cd16376014a85df5ab6b17fa",
+            '"request_schema_version": 2',
+            '"tag": "v1.1.0"',
+            '"version": "1.1.0"',
+            '"size": 43694',
+            '"size": 86729',
+            "95127ceb42aafbba32317ac1ac17a3349b7fe10899f24d671782b41475fe2e3f",
+            "b319a0947f6e58b6c457edb609e3a77854af6bbcdc763575cf98116279dadb92",
         )
         for required in manifest_requirements:
             with self.subTest(manifest_requirement=required):
@@ -343,7 +345,7 @@ class PublicSurfaceTests(unittest.TestCase):
         workflow_requirements = (
             "on:\n  release:\n    types:\n      - published\n",
             "permissions:\n  contents: read\n  id-token: write\n",
-            "group: publish-healthassure-messaging-v1.0.0",
+            "group: publish-healthassure-messaging-v1.1.0",
             "cancel-in-progress: false",
             "runs-on: ubuntu-24.04",
             "timeout-minutes: 15",

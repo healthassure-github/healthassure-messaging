@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed verification for the frozen healthassure-messaging 1.0.0 release."""
+"""Fail-closed verification for the frozen healthassure-messaging 1.1.0 release."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn, cast
 
 EXPECTED_REPOSITORY = "healthassure-github/healthassure-messaging"
-MANIFEST_PATH = Path(".github/release-manifests/v1.0.0.json")
+MANIFEST_PATH = Path(".github/release-manifests/v1.1.0.json")
 RELEASE_CONTROL_PATHS = (
-    ".github/release-manifests/v1.0.0.json",
+    ".github/release-manifests/v1.1.0.json",
     ".github/scripts/verify_frozen_release.py",
     ".github/workflows/release.yml",
     "tests/test_public_surface.py",
@@ -46,7 +46,7 @@ NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
 POSTFLIGHT_ATTEMPTS = 6
 POSTFLIGHT_DELAY_SECONDS = 10
-PYPI_VERSION_URL = "https://pypi.org/pypi/healthassure-messaging/1.0.0/json"
+PYPI_VERSION_URL = "https://pypi.org/pypi/healthassure-messaging/1.1.0/json"
 HEX_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 HEX_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 REQUIREMENT_PATTERN = re.compile(r"^([A-Za-z0-9_.-]+)([^;]*)(?:;(.*))?$")
@@ -259,11 +259,11 @@ def load_manifest(repository_root: Path) -> ReleaseManifest:
         repository != EXPECTED_REPOSITORY
         or distribution != "healthassure-messaging"
         or import_package != "healthassure_messaging"
-        or version != "1.0.0"
-        or tag != "v1.0.0"
+        or version != "1.1.0"
+        or tag != "v1.1.0"
         or HEX_SHA_PATTERN.fullmatch(source_commit) is None
-        or source_commit != "fbc9916ee2b714f0edb29a5e503d0f3f72d223cb"
-        or request_schema_version != 1
+        or source_commit != "7d9f6d1986484ab4a0c8e2edc7abb7f247babfa2"
+        or request_schema_version != 2
         or _specifier_set(python_requires) != _specifier_set(">=3.10,<3.14")
     ):
         _fail("manifest.invalid")
@@ -315,15 +315,15 @@ def load_manifest(repository_root: Path) -> ReleaseManifest:
     expected_artifacts = (
         ArtifactSpec(
             "wheel",
-            "healthassure_messaging-1.0.0-py3-none-any.whl",
-            42_333,
-            "f83d08696d27faa58f75d9f88e844bffd6f5fcb7099acfe1120b4c7b56bf8dc8",
+            "healthassure_messaging-1.1.0-py3-none-any.whl",
+            43_694,
+            "95127ceb42aafbba32317ac1ac17a3349b7fe10899f24d671782b41475fe2e3f",
         ),
         ArtifactSpec(
             "sdist",
-            "healthassure_messaging-1.0.0.tar.gz",
-            74_346,
-            "8c4bcba46e61fc78f34b01a2d7aea760426fa144cd16376014a85df5ab6b17fa",
+            "healthassure_messaging-1.1.0.tar.gz",
+            86_729,
+            "b319a0947f6e58b6c457edb609e3a77854af6bbcdc763575cf98116279dadb92",
         ),
     )
     if tuple(artifacts) != expected_artifacts:

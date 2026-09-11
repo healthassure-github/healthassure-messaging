@@ -1,4 +1,4 @@
-name: Publish frozen healthassure-messaging 1.0.0
+name: Publish frozen healthassure-messaging 1.1.0
 
 on:
   release:
@@ -10,12 +10,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-healthassure-messaging-v1.0.0
+  group: publish-healthassure-messaging-v1.1.0
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: Verify and publish frozen 1.0.0
+    name: Verify and publish frozen 1.1.0
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:

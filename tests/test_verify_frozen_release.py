@@ -38,7 +38,7 @@ def _metadata() -> bytes:
     return (
         b"Metadata-Version: 2.4\n"
         b"Name: healthassure-messaging\n"
-        b"Version: 1.0.0\n"
+        b"Version: 1.1.0\n"
         b"License-Expression: Apache-2.0\n"
         b"License-File: LICENSE\n"
         b"License-File: NOTICE\n"
@@ -60,7 +60,7 @@ def _metadata() -> bytes:
 def _wheel_bytes(
     *,
     metadata: bytes | None = None,
-    schema: int = 1,
+    schema: int = 2,
     include_typed: bool = True,
     include_notice: bool = True,
     disclosure: str | None = None,
@@ -76,7 +76,7 @@ def _wheel_bytes(
             archive.writestr("healthassure_messaging/py.typed", "")
         if disclosure is not None:
             archive.writestr("healthassure_messaging/unsafe.py", disclosure)
-        root = "healthassure_messaging-1.0.0.dist-info/"
+        root = "healthassure_messaging-1.1.0.dist-info/"
         archive.writestr(root + "METADATA", metadata or _metadata())
         archive.writestr(root + "licenses/LICENSE", "license\n")
         if include_notice:
@@ -92,13 +92,13 @@ def _wheel_bytes(
 def _sdist_bytes(
     *,
     metadata: bytes | None = None,
-    schema: int = 1,
+    schema: int = 2,
     include_typed: bool = True,
     include_notice: bool = True,
     disclosure: str | None = None,
 ) -> bytes:
     output = io.BytesIO()
-    root = "healthassure_messaging-1.0.0"
+    root = "healthassure_messaging-1.1.0"
     entries: dict[str, bytes] = {
         f"{root}/PKG-INFO": metadata or _metadata(),
         f"{root}/LICENSE": b"license\n",
@@ -131,13 +131,13 @@ def _manifest(
     artifacts = (
         verifier.ArtifactSpec(
             "wheel",
-            "healthassure_messaging-1.0.0-py3-none-any.whl",
+            "healthassure_messaging-1.1.0-py3-none-any.whl",
             len(wheel_content),
             hashlib.sha256(wheel_content).hexdigest(),
         ),
         verifier.ArtifactSpec(
             "sdist",
-            "healthassure_messaging-1.0.0.tar.gz",
+            "healthassure_messaging-1.1.0.tar.gz",
             len(sdist_content),
             hashlib.sha256(sdist_content).hexdigest(),
         ),
@@ -146,10 +146,10 @@ def _manifest(
         repository="healthassure-github/healthassure-messaging",
         distribution="healthassure-messaging",
         import_package="healthassure_messaging",
-        version="1.0.0",
-        tag="v1.0.0",
+        version="1.1.0",
+        tag="v1.1.0",
         artifact_source_commit=source_commit,
-        request_schema_version=1,
+        request_schema_version=2,
         python_requires=">=3.10,<3.14",
         runtime_dependencies=("requests>=2.32.3,<3",),
         optional_dependencies={
@@ -170,7 +170,7 @@ def _manifest(
 def _release_url(filename: str) -> str:
     return (
         "https://github.com/healthassure-github/healthassure-messaging/"
-        f"releases/download/v1.0.0/{filename}"
+        f"releases/download/v1.1.0/{filename}"
     )
 
 
@@ -315,7 +315,7 @@ def _git_repository(
         _git(repository, "add", ".")
         _git(repository, "commit", "-q", "-m", "root controls")
         control = _git(repository, "rev-parse", "HEAD")
-        _git(repository, "tag", "v1.0.0")
+        _git(repository, "tag", "v1.1.0")
         return repository, "0" * 40, control, _manifest(source_commit="0" * 40)
 
     (repository / "README.md").write_text("stable source\n", encoding="utf-8")
@@ -346,7 +346,7 @@ def _git_repository(
         _git(repository, "add", ".")
         _git(repository, "commit", "-q", "-m", "controls")
     control = _git(repository, "rev-parse", "HEAD")
-    _git(repository, "tag", "v1.0.0")
+    _git(repository, "tag", "v1.1.0")
     return repository, stable, control, _manifest(source_commit=stable)
 
 
@@ -363,17 +363,17 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
         manifest = verifier.load_manifest(PROJECT_ROOT)
         self.assertEqual(
             manifest.artifact_source_commit,
-            "fbc9916ee2b714f0edb29a5e503d0f3f72d223cb",
+            "7d9f6d1986484ab4a0c8e2edc7abb7f247babfa2",
         )
-        self.assertEqual(tuple(item.size for item in manifest.artifacts), (42_333, 74_346))
-        self.assertEqual(manifest.request_schema_version, 1)
+        self.assertEqual(tuple(item.size for item in manifest.artifacts), (43_694, 86_729))
+        self.assertEqual(manifest.request_schema_version, 2)
 
     def test_manifest_rejects_duplicate_unknown_and_changed_fields(self) -> None:
         original = (PROJECT_ROOT / verifier.MANIFEST_PATH).read_text(encoding="utf-8")
         variants = (
-            original.replace('"version": "1.0.0"', '"version": "1.0.0", "version": "2.0.0"'),
-            original.replace('"version": "1.0.0"', '"version": "1.0.0", "unknown": true'),
-            original.replace('"request_schema_version": 1', '"request_schema_version": 2'),
+            original.replace('"version": "1.1.0"', '"version": "1.1.0", "version": "2.0.0"'),
+            original.replace('"version": "1.1.0"', '"version": "1.1.0", "unknown": true'),
+            original.replace('"request_schema_version": 2', '"request_schema_version": 1'),
         )
         for content in variants:
             with (
@@ -473,7 +473,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
             manifest,
             event_name="release",
             repository=manifest.repository,
-            ref="refs/tags/v1.0.0",
+            ref="refs/tags/v1.1.0",
         )
         self.assertEqual(
             {asset.name for asset in assets},
@@ -510,19 +510,19 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
         manifest = _manifest()
         base = _release_payload(manifest)
         cases: list[tuple[dict[str, object], str, str, str]] = [
-            (base, "push", manifest.repository, "refs/tags/v1.0.0"),
-            (base, "release", "example/other", "refs/tags/v1.0.0"),
+            (base, "push", manifest.repository, "refs/tags/v1.1.0"),
+            (base, "release", "example/other", "refs/tags/v1.1.0"),
             (base, "release", manifest.repository, "refs/heads/main"),
         ]
         wrong_action = copy.deepcopy(base)
         wrong_action["action"] = "created"
-        cases.append((wrong_action, "release", manifest.repository, "refs/tags/v1.0.0"))
+        cases.append((wrong_action, "release", manifest.repository, "refs/tags/v1.1.0"))
         for field, value in (("draft", True), ("prerelease", True), ("tag_name", "v2.0.0")):
             payload = copy.deepcopy(base)
             release = payload["release"]
             assert isinstance(release, dict)
             release[field] = value
-            cases.append((payload, "release", manifest.repository, "refs/tags/v1.0.0"))
+            cases.append((payload, "release", manifest.repository, "refs/tags/v1.1.0"))
         for payload, event_name, repository, ref in cases:
             with self.subTest(event_name=event_name, repository=repository, ref=ref):
                 path = _write_event(self, payload)
@@ -572,7 +572,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
                     manifest,
                     event_name="release",
                     repository=manifest.repository,
-                    ref="refs/tags/v1.0.0",
+                    ref="refs/tags/v1.1.0",
                 )
             self.assert_sanitized(raised.exception)
 
@@ -588,7 +588,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
                 manifest,
                 event_name="release",
                 repository=manifest.repository,
-                ref="refs/tags/v1.0.0",
+                ref="refs/tags/v1.1.0",
             )
         self.assert_sanitized(raised.exception)
 
@@ -604,7 +604,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
         bad_metadata = _metadata().replace(b"requests<3,>=2.32.3", b"requests<4,>=2.32.3")
         variants = (
             _wheel_bytes(metadata=bad_metadata),
-            _wheel_bytes(schema=2),
+            _wheel_bytes(schema=1),
             _wheel_bytes(include_typed=False),
             _wheel_bytes(include_notice=False),
             _wheel_bytes(disclosure=unsafe),
@@ -928,7 +928,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
         handler = verifier._SafeRedirectHandler()
         request = verifier.urllib.request.Request(
             "https://github.com/healthassure-github/healthassure-messaging/"
-            "releases/download/v1.0.0/artifact.whl"
+            "releases/download/v1.1.0/artifact.whl"
         )
         expected = verifier.urllib.request.Request(
             "https://release-assets.githubusercontent.com/synthetic/artifact.whl"
@@ -968,7 +968,7 @@ class FrozenReleaseVerifierTests(unittest.TestCase):
     def test_release_asset_redirect_rejects_unsafe_boundaries(self) -> None:
         safe_original = (
             "https://github.com/healthassure-github/healthassure-messaging/"
-            "releases/download/v1.0.0/artifact.whl"
+            "releases/download/v1.1.0/artifact.whl"
         )
         safe_target = (
             "https://release-assets.githubusercontent.com/synthetic/"
