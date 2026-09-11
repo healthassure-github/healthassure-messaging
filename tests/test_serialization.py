@@ -5,6 +5,7 @@ import unittest
 
 from healthassure_messaging import (
     REQUEST_SCHEMA_VERSION,
+    ImageParameter,
     MessageRequest,
     RequestSerializationError,
     TemplateComponent,
@@ -78,7 +79,11 @@ class SerializationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            tuple(parameter.text for parameter in decoded.message.components[1].parameters),
+            tuple(
+                parameter.text
+                for parameter in decoded.message.components[1].parameters
+                if isinstance(parameter, TextParameter)
+            ),
             ("body-1", "body-2"),
         )
 
@@ -90,9 +95,36 @@ class SerializationTests(unittest.TestCase):
         self.assertNotIn("credential", serialized.lower())
         self.assertNotIn("provider_config", serialized.lower())
 
+    def test_schema_two_image_round_trip_is_deterministic_and_redacted_by_repr(self) -> None:
+        request = MessageRequest(
+            recipient="+12025550123",
+            message=TemplateMessage(
+                template=TemplateReference(name="image_notice", language_code="en_US"),
+                components=(
+                    TemplateComponent(
+                        component_type=TemplateComponentType.HEADER,
+                        parameters=(ImageParameter(media_id="9988776655"),),
+                    ),
+                ),
+            ),
+            correlation_id="correlation-image",
+            idempotency_key="idempotency-image",
+        )
+        payload = serialize_request(request)
+        self.assertEqual(serialize_request(deserialize_request(payload)), payload)
+        self.assertEqual(json.loads(payload)["schema_version"], 2)
+        decoded = deserialize_request(payload)
+        self.assertNotIn("9988776655", repr(decoded))
+
+    def test_schema_one_text_and_template_requests_remain_strictly_readable(self) -> None:
+        for request in (_text_request(), _template_request()):
+            parsed = json.loads(serialize_request(request))
+            parsed["schema_version"] = 1
+            self.assertEqual(deserialize_request(json.dumps(parsed)), request)
+
     def test_unsupported_schema_versions_are_rejected(self) -> None:
         parsed = json.loads(serialize_request(_text_request()))
-        for version in (0, 2, True, "1"):
+        for version in (0, 3, True, "1"):
             with self.subTest(version=version):
                 parsed["schema_version"] = version
                 with self.assertRaises(UnsupportedSchemaVersionError):

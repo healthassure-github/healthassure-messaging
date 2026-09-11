@@ -23,7 +23,13 @@ if not _pymongo_available:
     ) from None
 
 from ..contracts import NormalizedError
-from ..enums import ErrorCategory, IntentState, SendDisposition, TemplateComponentType
+from ..enums import (
+    ErrorCategory,
+    IntentState,
+    SendDisposition,
+    TemplateComponentType,
+    TemplateParameterType,
+)
 from ..phone import validate_e164_number
 from ..service_contracts import (
     DispatchResult,
@@ -35,6 +41,7 @@ from ..service_contracts import (
 )
 
 MONGO_RECORD_SCHEMA_VERSION: Final[int] = 1
+TEMPLATE_ALIAS_SCHEMA_VERSION: Final[int] = 2
 _MAX_RECOVERY_LIMIT: Final[int] = 1_000
 _COLLECTION_PREFIX_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_]+")
 _Document = dict[str, Any]
@@ -1034,7 +1041,17 @@ class MongoTextSessionPolicy:
 
 
 def _alias_fields(alias: TemplateAlias) -> _Document:
+    schema_version = (
+        TEMPLATE_ALIAS_SCHEMA_VERSION
+        if any(
+            parameter_type is TemplateParameterType.IMAGE
+            for component in alias.components
+            for parameter_type in component.parameter_types
+        )
+        else MONGO_RECORD_SCHEMA_VERSION
+    )
     return {
+        "record_schema_version": schema_version,
         "template_key": alias.key,
         "provider_key": alias.provider_key,
         "template_name": alias.template_name,
@@ -1043,6 +1060,16 @@ def _alias_fields(alias: TemplateAlias) -> _Document:
             {
                 "component_type": component.component_type.value,
                 "parameter_names": list(component.parameter_names),
+                **(
+                    {
+                        "parameter_types": [
+                            parameter_type.value
+                            for parameter_type in component.parameter_types
+                        ]
+                    }
+                    if schema_version == TEMPLATE_ALIAS_SCHEMA_VERSION
+                    else {}
+                ),
             }
             for component in alias.components
         ],
@@ -1051,7 +1078,12 @@ def _alias_fields(alias: TemplateAlias) -> _Document:
 
 def _alias_from_document(value: object) -> TemplateAlias:
     document = _as_document(value)
-    _validate_schema(document)
+    schema_version = document.get("record_schema_version")
+    if type(schema_version) is not int or schema_version not in {
+        MONGO_RECORD_SCHEMA_VERSION,
+        TEMPLATE_ALIAS_SCHEMA_VERSION,
+    }:
+        raise _record_error()
     components_value = document.get("components")
     if not isinstance(components_value, list):
         raise _record_error()
@@ -1068,21 +1100,46 @@ def _alias_from_document(value: object) -> TemplateAlias:
                 isinstance(name, str) and name.strip() for name in names
             ):
                 raise _record_error()
+            raw_parameter_types = component.get("parameter_types")
+            if schema_version == MONGO_RECORD_SCHEMA_VERSION:
+                if raw_parameter_types is not None:
+                    raise _record_error()
+                parameter_types = tuple(
+                    TemplateParameterType.TEXT for _ in cast(list[str], names)
+                )
+            else:
+                if not isinstance(raw_parameter_types, list) or len(
+                    raw_parameter_types
+                ) != len(names):
+                    raise _record_error()
+                parameter_types = tuple(
+                    TemplateParameterType(_require_text(item, "parameter type"))
+                    for item in raw_parameter_types
+                )
             components.append(
                 TemplateComponentSpec(
                     component_type=TemplateComponentType(
                         _doc_text(component, "component_type")
                     ),
                     parameter_names=tuple(cast(list[str], names)),
+                    parameter_types=parameter_types,
                 )
             )
-        return TemplateAlias(
+        alias = TemplateAlias(
             key=_doc_text(document, "template_key"),
             provider_key=_doc_text(document, "provider_key"),
             template_name=_doc_text(document, "template_name"),
             language_code=_doc_text(document, "language_code"),
             components=tuple(components),
         )
+        contains_image = any(
+            parameter_type is TemplateParameterType.IMAGE
+            for component in alias.components
+            for parameter_type in component.parameter_types
+        )
+        if (schema_version == TEMPLATE_ALIAS_SCHEMA_VERSION) is not contains_image:
+            raise _record_error()
+        return alias
 
     return _record_call(build_alias)
 
@@ -1114,7 +1171,6 @@ class MongoTemplateCatalog:
         fields = _alias_fields(alias)
         if expected_revision is None:
             document = {
-                "record_schema_version": MONGO_RECORD_SCHEMA_VERSION,
                 **fields,
                 "active": True,
                 "revision": 1,
@@ -1143,7 +1199,12 @@ class MongoTemplateCatalog:
             lambda: self._collection.find_one_and_update(
                 {
                     "template_key": alias.key,
-                    "record_schema_version": MONGO_RECORD_SCHEMA_VERSION,
+                    "record_schema_version": {
+                        "$in": [
+                            MONGO_RECORD_SCHEMA_VERSION,
+                            TEMPLATE_ALIAS_SCHEMA_VERSION,
+                        ]
+                    },
                     "revision": revision,
                 },
                 {

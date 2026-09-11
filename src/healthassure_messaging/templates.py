@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 from .contracts import (
+    ImageParameter,
     TemplateComponent,
     TemplateMessage,
+    TemplateParameter,
     TemplateReference,
     TextParameter,
 )
+from .enums import TemplateParameterType
 from .service_contracts import (
     DuplicateTemplateAliasError,
     ExtraTemplateParameterError,
@@ -42,20 +45,23 @@ class InMemoryTemplateCatalog:
 
 def build_template_message(
     alias: TemplateAlias,
-    parameters: Mapping[str, str],
+    parameters: Mapping[str, str | ImageParameter],
 ) -> TemplateMessage:
-    """Build an ordered text-parameter template without inference or reordering."""
+    """Build ordered typed template parameters without inference or reordering."""
 
     if not isinstance(alias, TemplateAlias):
         raise TypeError("alias must be a TemplateAlias")
     if not isinstance(parameters, Mapping):
         raise TypeError("parameters must be a mapping")
 
-    provided: dict[str, str] = {}
+    provided: dict[str, str | ImageParameter] = {}
     for name, value in parameters.items():
         if not isinstance(name, str) or not name.strip():
             raise TemplateParameterError("template parameter names must be non-empty strings")
-        if not isinstance(value, str) or not value.strip():
+        if not (
+            (isinstance(value, str) and value.strip())
+            or isinstance(value, ImageParameter)
+        ):
             raise TemplateParameterError("template parameter values must be non-empty strings")
         provided[name] = value
 
@@ -70,17 +76,30 @@ def build_template_message(
     if supplied - required:
         raise ExtraTemplateParameterError("unrecognized template parameters were supplied")
 
-    components = tuple(
-        TemplateComponent(
-            component_type=component.component_type,
-            parameters=tuple(
-                TextParameter(text=provided[parameter_name])
-                for parameter_name in component.parameter_names
-            ),
+    components: list[TemplateComponent] = []
+    for component in alias.components:
+        built_parameters: list[TemplateParameter] = []
+        for parameter_name, parameter_type in zip(
+            component.parameter_names,
+            component.parameter_types,
+            strict=True,
+        ):
+            value = provided[parameter_name]
+            if parameter_type is TemplateParameterType.TEXT:
+                if not isinstance(value, str):
+                    raise TemplateParameterError("template parameter type is invalid")
+                built_parameters.append(TextParameter(text=value))
+            else:
+                if not isinstance(value, ImageParameter):
+                    raise TemplateParameterError("template parameter type is invalid")
+                built_parameters.append(value)
+        components.append(
+            TemplateComponent(
+                component_type=component.component_type,
+                parameters=tuple(built_parameters),
+            )
         )
-        for component in alias.components
-    )
     return TemplateMessage(
         template=TemplateReference(name=alias.template_name, language_code=alias.language_code),
-        components=components,
+        components=tuple(components),
     )

@@ -9,6 +9,7 @@ from healthassure_messaging import (
     DispatchResult,
     DuplicateTemplateAliasError,
     ExtraTemplateParameterError,
+    ImageParameter,
     InMemoryTemplateCatalog,
     IntentCreationResult,
     IntentState,
@@ -19,6 +20,9 @@ from healthassure_messaging import (
     TemplateAlias,
     TemplateComponentSpec,
     TemplateComponentType,
+    TemplateParameterError,
+    TemplateParameterType,
+    TextParameter,
     build_template_message,
 )
 
@@ -112,11 +116,17 @@ class TemplateServiceContractTests(unittest.TestCase):
             (TemplateComponentType.HEADER, TemplateComponentType.BODY),
         )
         self.assertEqual(
-            tuple(parameter.text for parameter in message.components[0].parameters),
+            tuple(
+                cast(TextParameter, parameter).text
+                for parameter in message.components[0].parameters
+            ),
             ("header-2", "header-1"),
         )
         self.assertEqual(
-            tuple(parameter.text for parameter in message.components[1].parameters),
+            tuple(
+                cast(TextParameter, parameter).text
+                for parameter in message.components[1].parameters
+            ),
             ("body-3", "body-1", "body-2"),
         )
 
@@ -146,6 +156,52 @@ class TemplateServiceContractTests(unittest.TestCase):
             language_code="en_US",
         )
         self.assertEqual(build_template_message(alias, {}).components, ())
+
+    def test_image_spec_builds_exact_header_parameter(self) -> None:
+        alias = TemplateAlias(
+            key="synthetic_image",
+            provider_key="meta",
+            template_name="synthetic_image_v1",
+            language_code="en_US",
+            components=(
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.HEADER,
+                    parameter_names=("image",),
+                    parameter_types=(TemplateParameterType.IMAGE,),
+                ),
+            ),
+        )
+        image = ImageParameter(media_id="9988776655")
+        message = build_template_message(alias, {"image": image})
+        self.assertIs(message.components[0].parameters[0], image)
+        with self.assertRaises(TemplateParameterError):
+            build_template_message(alias, {"image": "synthetic-media-id"})
+
+    def test_missing_spec_types_default_to_text(self) -> None:
+        component = TemplateComponentSpec(
+            component_type=TemplateComponentType.BODY,
+            parameter_names=("1", "2"),
+        )
+        self.assertEqual(
+            component.parameter_types,
+            (TemplateParameterType.TEXT, TemplateParameterType.TEXT),
+        )
+
+    def test_image_spec_is_header_only_and_exclusive(self) -> None:
+        for component_type, names, parameter_types in (
+            (TemplateComponentType.BODY, ("image",), (TemplateParameterType.IMAGE,)),
+            (
+                TemplateComponentType.HEADER,
+                ("image", "caption"),
+                (TemplateParameterType.IMAGE, TemplateParameterType.TEXT),
+            ),
+        ):
+            with self.subTest(component_type=component_type), self.assertRaises(ValueError):
+                TemplateComponentSpec(
+                    component_type=component_type,
+                    parameter_names=names,
+                    parameter_types=parameter_types,
+                )
 
     def test_catalog_rejects_duplicate_alias_keys(self) -> None:
         alias = TemplateAlias(

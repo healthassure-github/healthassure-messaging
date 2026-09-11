@@ -6,6 +6,7 @@ from typing import cast
 
 from healthassure_messaging import (
     ErrorCategory,
+    ImageParameter,
     MessageRequest,
     NormalizedError,
     SendDisposition,
@@ -44,6 +45,7 @@ class ContractTests(unittest.TestCase):
             TextMessage,
             TemplateReference,
             TextParameter,
+            ImageParameter,
             TemplateComponent,
             TemplateMessage,
             MessageRequest,
@@ -158,6 +160,31 @@ class ContractTests(unittest.TestCase):
         assert isinstance(request.message, TemplateMessage)
         self.assertEqual(request.message.components, (header, body))
         self.assertEqual(request.message.components[1].parameters, (second, first))
+
+    def test_image_parameter_is_immutable_redacted_and_header_only(self) -> None:
+        image = ImageParameter(media_id="9988776655")
+        self.assertNotIn("9988776655", repr(image))
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            _set_attribute(image, "media_id", "changed")
+        header = TemplateComponent(
+            component_type=TemplateComponentType.HEADER,
+            parameters=(image,),
+        )
+        self.assertIs(header.parameters[0], image)
+        with self.assertRaises(ValueError):
+            TemplateComponent(
+                component_type=TemplateComponentType.BODY,
+                parameters=(image,),
+            )
+        with self.assertRaises(ValueError):
+            TemplateComponent(
+                component_type=TemplateComponentType.HEADER,
+                parameters=(image, TextParameter(text="mixed")),
+            )
+
+        for malformed in ("", "1234", "012345", "media-id", "1" * 65, 998877):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                ImageParameter(media_id=cast(str, malformed))
 
     def test_component_and_message_require_tuples(self) -> None:
         parameter = TextParameter(text="value")

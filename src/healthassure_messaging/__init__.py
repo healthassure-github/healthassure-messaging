@@ -1,10 +1,12 @@
 from .contracts import (
+    ImageParameter,
     Message,
     MessageRequest,
     NormalizedError,
     SendResult,
     TemplateComponent,
     TemplateMessage,
+    TemplateParameter,
     TemplateReference,
     TextMessage,
     TextParameter,
@@ -15,6 +17,7 @@ from .enums import (
     IntentState,
     SendDisposition,
     TemplateComponentType,
+    TemplateParameterType,
 )
 from .phone import (
     PhoneNumberError,
@@ -92,6 +95,7 @@ __all__ = [
     "ExtraTemplateParameterError",
     "FakeMessagingProvider",
     "IdempotencyConflictError",
+    "ImageParameter",
     "InMemoryIntentRepository",
     "InMemoryRecipientEligibilityPolicy",
     "InMemoryTemplateCatalog",
@@ -131,7 +135,9 @@ __all__ = [
     "TemplateComponentSpec",
     "TemplateComponentType",
     "TemplateMessage",
+    "TemplateParameter",
     "TemplateParameterError",
+    "TemplateParameterType",
     "TemplateReference",
     "TextMessage",
     "TextParameter",

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import NoReturn, cast
 
 from .contracts import (
+    ImageParameter,
     MessageRequest,
     TemplateComponent,
     TemplateMessage,
@@ -14,7 +15,8 @@ from .contracts import (
 )
 from .enums import TemplateComponentType
 
-REQUEST_SCHEMA_VERSION = 1
+REQUEST_SCHEMA_VERSION = 2
+_LEGACY_REQUEST_SCHEMA_VERSION = 1
 
 
 class RequestSerializationError(ValueError):
@@ -39,7 +41,11 @@ def _message_to_data(message: TextMessage | TemplateMessage) -> dict[str, object
             {
                 "type": component.component_type.value,
                 "parameters": [
-                    {"type": "text", "text": parameter.text}
+                    (
+                        {"type": "image", "media_id": parameter.media_id}
+                        if isinstance(parameter, ImageParameter)
+                        else {"type": "text", "text": parameter.text}
+                    )
                     for parameter in component.parameters
                 ],
             }
@@ -105,7 +111,7 @@ def _expect_exact_keys(
     return value
 
 
-def _parse_component(value: object) -> TemplateComponent:
+def _parse_component(value: object, *, schema_version: int) -> TemplateComponent:
     component = _expect_exact_keys(
         _expect_object(value, "template component"),
         {"type", "parameters"},
@@ -117,21 +123,29 @@ def _parse_component(value: object) -> TemplateComponent:
     except ValueError as error:
         raise RequestSerializationError("unknown template component type") from error
 
-    parameters: list[TextParameter] = []
+    parameters: list[TextParameter | ImageParameter] = []
     for raw_parameter in _expect_list(component["parameters"], "template parameters"):
-        parameter = _expect_exact_keys(
-            _expect_object(raw_parameter, "template parameter"),
-            {"type", "text"},
-            "template parameter",
-        )
-        if _expect_string(parameter["type"], "template parameter type") != "text":
+        parameter = _expect_object(raw_parameter, "template parameter")
+        parameter_type = _expect_string(parameter.get("type"), "template parameter type")
+        if parameter_type == "text":
+            _expect_exact_keys(parameter, {"type", "text"}, "template parameter")
+            parameters.append(
+                TextParameter(text=_expect_string(parameter["text"], "parameter text"))
+            )
+        elif parameter_type == "image" and schema_version == REQUEST_SCHEMA_VERSION:
+            _expect_exact_keys(parameter, {"type", "media_id"}, "template parameter")
+            parameters.append(
+                ImageParameter(
+                    media_id=_expect_string(parameter["media_id"], "parameter media_id")
+                )
+            )
+        else:
             raise RequestSerializationError("unknown template parameter type")
-        parameters.append(TextParameter(text=_expect_string(parameter["text"], "parameter text")))
 
     return TemplateComponent(component_type=component_type, parameters=tuple(parameters))
 
 
-def _parse_message(value: object) -> TextMessage | TemplateMessage:
+def _parse_message(value: object, *, schema_version: int) -> TextMessage | TemplateMessage:
     message = _expect_object(value, "message")
     message_type = _expect_string(message.get("type"), "message type")
     if message_type == "text":
@@ -146,7 +160,7 @@ def _parse_message(value: object) -> TextMessage | TemplateMessage:
             "template reference",
         )
         components = tuple(
-            _parse_component(component)
+            _parse_component(component, schema_version=schema_version)
             for component in _expect_list(message["components"], "template components")
         )
         return TemplateMessage(
@@ -184,7 +198,10 @@ def deserialize_request(payload: str | bytes) -> MessageRequest:
         "envelope",
     )
     schema_version = envelope["schema_version"]
-    if type(schema_version) is not int or schema_version != REQUEST_SCHEMA_VERSION:
+    if type(schema_version) is not int or schema_version not in {
+        _LEGACY_REQUEST_SCHEMA_VERSION,
+        REQUEST_SCHEMA_VERSION,
+    }:
         raise UnsupportedSchemaVersionError("unsupported request schema version")
 
     request = _expect_exact_keys(
@@ -194,7 +211,7 @@ def deserialize_request(payload: str | bytes) -> MessageRequest:
     )
     return MessageRequest(
         recipient=_expect_string(request["recipient"], "recipient"),
-        message=_parse_message(request["message"]),
+        message=_parse_message(request["message"], schema_version=schema_version),
         correlation_id=_expect_string(request["correlation_id"], "correlation_id"),
         idempotency_key=_expect_string(request["idempotency_key"], "idempotency_key"),
     )

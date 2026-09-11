@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from .contracts import (
+    ImageParameter,
     Message,
     MessageRequest,
     NormalizedError,
@@ -61,7 +62,14 @@ def _message_fingerprint_data(message: Message) -> dict[str, object]:
         "components": [
             {
                 "type": component.component_type.value,
-                "parameters": [parameter.text for parameter in component.parameters],
+                "parameters": [
+                    (
+                        {"type": "image", "media_id": parameter.media_id}
+                        if isinstance(parameter, ImageParameter)
+                        else parameter.text
+                    )
+                    for parameter in component.parameters
+                ],
             }
             for component in message.components
         ],
@@ -130,7 +138,7 @@ class MessagingService:
         *,
         recipient: str,
         template_key: str,
-        parameters: Mapping[str, str],
+        parameters: Mapping[str, str | ImageParameter],
         source_flow: str,
         idempotency_key: str,
         actor_id: str,

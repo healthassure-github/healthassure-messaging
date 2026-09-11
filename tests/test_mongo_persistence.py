@@ -30,6 +30,7 @@ from healthassure_messaging import (
     TemplateAlias,
     TemplateComponentSpec,
     TemplateComponentType,
+    TemplateParameterType,
 )
 from healthassure_messaging.persistence import mongo as mongo_module
 from healthassure_messaging.persistence.mongo import (
@@ -163,7 +164,7 @@ def blocked(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 builtins.__import__ = blocked
 import healthassure_messaging
-assert healthassure_messaging.REQUEST_SCHEMA_VERSION == 1
+assert healthassure_messaging.REQUEST_SCHEMA_VERSION == 2
 try:
     import healthassure_messaging.persistence.mongo
 except ImportError as error:
@@ -843,6 +844,58 @@ class MongoTemplateCatalogTests(unittest.TestCase):
                 "^Mongo record does not match the supported schema$",
             ):
                 mongo_module._alias_from_document({**base, **malformed})
+
+    def test_schema_two_image_alias_round_trip_and_schema_one_text_compatibility(self) -> None:
+        persistence, fake, _ = _persistence()
+        image_alias = TemplateAlias(
+            key="synthetic-image-template",
+            provider_key="meta",
+            template_name="synthetic_image_template",
+            language_code="en_US",
+            components=(
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.HEADER,
+                    parameter_names=("image",),
+                    parameter_types=(TemplateParameterType.IMAGE,),
+                ),
+            ),
+        )
+        self.assertEqual(
+            persistence.templates.save(
+                image_alias,
+                expected_revision=None,
+                actor_id="synthetic-actor",
+                updated_at_epoch=10,
+            ),
+            1,
+        )
+        document = fake.collection("messaging_template_aliases").documents[0]
+        self.assertEqual(document["record_schema_version"], 2)
+        self.assertEqual(document["components"][0]["parameter_types"], ["image"])
+        self.assertEqual(persistence.templates.get(image_alias.key), image_alias)
+
+        schema_one = {
+            "record_schema_version": 1,
+            "template_key": "synthetic-text-template",
+            "provider_key": "meta",
+            "template_name": "synthetic_text_template",
+            "language_code": "en_US",
+            "components": [
+                {"component_type": "body", "parameter_names": ["1"]}
+            ],
+            "active": True,
+            "revision": 1,
+            "actor_id": "synthetic-actor",
+            "updated_at_epoch": 10,
+        }
+        fake.collection("messaging_template_aliases").insert_one(schema_one)
+        text_alias = persistence.templates.get("synthetic-text-template")
+        self.assertIsNotNone(text_alias)
+        assert text_alias is not None
+        self.assertEqual(
+            text_alias.components[0].parameter_types,
+            (TemplateParameterType.TEXT,),
+        )
 
 
 class MongoStoredRecordValidationTests(unittest.TestCase):

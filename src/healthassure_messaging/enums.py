@@ -29,6 +29,11 @@ class TemplateComponentType(_StringEnum):
     BUTTON = "button"
 
 
+class TemplateParameterType(_StringEnum):
+    TEXT = "text"
+    IMAGE = "image"
+
+
 class DeliveryStatus(_StringEnum):
     SENT = "sent"
     DELIVERED = "delivered"

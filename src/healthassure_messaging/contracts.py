@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from .enums import ErrorCategory, SendDisposition, TemplateComponentType
 from .phone import validate_e164_number
+
+_META_MEDIA_ID_PATTERN = re.compile(r"[1-9][0-9]{4,63}")
 
 
 def _require_non_empty_text(value: object, field_name: str) -> None:
@@ -82,17 +85,46 @@ class TextParameter:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageParameter:
+    media_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.media_id, str)
+            or _META_MEDIA_ID_PATTERN.fullmatch(self.media_id) is None
+        ):
+            raise ValueError("media_id must be a Meta media identifier")
+
+
+TemplateParameter = TextParameter | ImageParameter
+
+
+@dataclass(frozen=True, slots=True)
 class TemplateComponent:
     component_type: TemplateComponentType
-    parameters: tuple[TextParameter, ...]
+    parameters: tuple[TemplateParameter, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.component_type, TemplateComponentType):
             raise TypeError("component_type must be a TemplateComponentType")
         if not isinstance(self.parameters, tuple):
             raise TypeError("parameters must be a tuple")
-        if not all(isinstance(parameter, TextParameter) for parameter in self.parameters):
-            raise TypeError("parameters must contain only TextParameter values")
+        if not all(
+            isinstance(parameter, (TextParameter, ImageParameter))
+            for parameter in self.parameters
+        ):
+            raise TypeError("parameters must contain only template parameter values")
+        image_parameters = tuple(
+            parameter
+            for parameter in self.parameters
+            if isinstance(parameter, ImageParameter)
+        )
+        if image_parameters and (
+            self.component_type is not TemplateComponentType.HEADER
+            or len(self.parameters) != 1
+            or len(image_parameters) != 1
+        ):
+            raise ValueError("image parameters require an exclusive header component")
 
 
 @dataclass(frozen=True, slots=True)

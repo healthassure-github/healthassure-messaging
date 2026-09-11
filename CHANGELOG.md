@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0 - 2026-09-10
+
+- Add typed image-header template parameters with request schema 2.
+- Preserve strict request-schema-1 and template-alias-schema-1 compatibility.
+
+## 1.1.0.dev1 - 2026-09-10
+
+- Qualify the image-header contract before the stable release.
+
 All notable changes to this project are documented in this file.
 
 ## 1.0.0 - 2026-08-31

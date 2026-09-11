@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .contracts import NormalizedError
-from .enums import IntentState, SendDisposition, TemplateComponentType
+from .enums import (
+    IntentState,
+    SendDisposition,
+    TemplateComponentType,
+    TemplateParameterType,
+)
 
 
 def _require_text(value: object, field_name: str) -> None:
@@ -20,6 +25,7 @@ def _require_optional_text(value: object, field_name: str) -> None:
 class TemplateComponentSpec:
     component_type: TemplateComponentType
     parameter_names: tuple[str, ...]
+    parameter_types: tuple[TemplateParameterType, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.component_type, TemplateComponentType):
@@ -35,6 +41,28 @@ class TemplateComponentSpec:
             raise ValueError("parameter_names must not be empty")
         for name in self.parameter_names:
             _require_text(name, "parameter name")
+        if not isinstance(self.parameter_types, tuple):
+            raise TypeError("parameter_types must be a tuple")
+        parameter_types = self.parameter_types or tuple(
+            TemplateParameterType.TEXT for _ in self.parameter_names
+        )
+        if len(parameter_types) != len(self.parameter_names) or not all(
+            isinstance(parameter_type, TemplateParameterType)
+            for parameter_type in parameter_types
+        ):
+            raise TypeError("parameter_types must match parameter_names")
+        image_parameters = tuple(
+            parameter_type
+            for parameter_type in parameter_types
+            if parameter_type is TemplateParameterType.IMAGE
+        )
+        if image_parameters and (
+            self.component_type is not TemplateComponentType.HEADER
+            or len(parameter_types) != 1
+            or len(image_parameters) != 1
+        ):
+            raise ValueError("image parameters require an exclusive header component")
+        object.__setattr__(self, "parameter_types", parameter_types)
 
 
 @dataclass(frozen=True, slots=True)

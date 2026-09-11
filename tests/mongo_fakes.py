@@ -47,7 +47,13 @@ def _matches(document: Document, query: Document) -> bool:
     for key, expected in query.items():
         values = _values_at(document, key.split("."))
         if isinstance(expected, dict):
-            if set(expected) == {"$lt"}:
+            if set(expected) == {"$in"}:
+                candidates = expected["$in"]
+                if not isinstance(candidates, list) or not any(
+                    value in candidates for value in values
+                ):
+                    return False
+            elif set(expected) == {"$lt"}:
                 if not any(value < expected["$lt"] for value in values):
                     return False
             elif set(expected) == {"$ne"}:

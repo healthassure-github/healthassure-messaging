@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -15,6 +16,7 @@ from healthassure_messaging import (
     ExtraTemplateParameterError,
     FakeMessagingProvider,
     IdempotencyConflictError,
+    ImageParameter,
     InMemoryIntentRepository,
     InMemoryRecipientEligibilityPolicy,
     InMemoryTemplateCatalog,
@@ -41,6 +43,7 @@ from healthassure_messaging import (
     TemplateAlias,
     TemplateComponentSpec,
     TemplateComponentType,
+    TemplateParameterType,
     UnknownTemplateError,
 )
 from healthassure_messaging.http import HttpOutcome, HttpResponse
@@ -376,7 +379,7 @@ class MessagingServiceTests(unittest.TestCase):
         intent = repository.get("synthetic_flow", "synthetic-idempotency")
         self.assertIsNotNone(intent)
         assert intent is not None
-        self.assertEqual(json.loads(intent.serialized_request)["schema_version"], 1)
+        self.assertEqual(json.loads(intent.serialized_request)["schema_version"], 2)
         self.assertEqual(intent.actor_id, "synthetic-actor")
 
     def test_recipient_is_normalized_before_policy_and_persistence(self) -> None:
@@ -459,7 +462,7 @@ class MessagingServiceTests(unittest.TestCase):
                 intent = repository.get("synthetic_flow", "synthetic-idempotency")
                 assert intent is not None
                 self.assertEqual(intent.state, IntentState.REJECTED)
-                self.assertIn('"schema_version":1', intent.serialized_request)
+                self.assertIn('"schema_version":2', intent.serialized_request)
 
     def test_text_requires_an_active_session(self) -> None:
         inactive, provider, repository, _, _ = self._service(active_sessions=())
@@ -712,6 +715,85 @@ class MessagingServiceTests(unittest.TestCase):
         self.assertEqual(repository.events, ("create", "claim", "complete"))
         self.assertEqual(correlations.calls, 1)
         self.assertEqual(intent_ids.calls, 1)
+
+    def test_image_media_id_participates_in_request_fingerprint(self) -> None:
+        alias = _template_alias(
+            key="synthetic_image",
+            template_name="synthetic_image_v1",
+            components=(
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.HEADER,
+                    parameter_names=("image",),
+                    parameter_types=(TemplateParameterType.IMAGE,),
+                ),
+            ),
+        )
+        service, provider, _, _, _ = self._service(aliases=(alias,))
+        first = service.send_template(
+            recipient=SYNTHETIC_RECIPIENT,
+            template_key=alias.key,
+            parameters={"image": ImageParameter(media_id="9988776655")},
+            source_flow="synthetic_flow",
+            idempotency_key="synthetic-idempotency",
+            actor_id="synthetic-actor",
+        )
+        replay = service.send_template(
+            recipient=SYNTHETIC_RECIPIENT,
+            template_key=alias.key,
+            parameters={"image": ImageParameter(media_id="9988776655")},
+            source_flow="synthetic_flow",
+            idempotency_key="synthetic-idempotency",
+            actor_id="synthetic-actor",
+        )
+        self.assertFalse(first.idempotent_replay)
+        self.assertTrue(replay.idempotent_replay)
+        self.assertEqual(len(cast(_RecordingProvider, provider).requests), 1)
+        with self.assertRaises(IdempotencyConflictError):
+            service.send_template(
+                recipient=SYNTHETIC_RECIPIENT,
+                template_key=alias.key,
+                parameters={"image": ImageParameter(media_id="9988776656")},
+                source_flow="synthetic_flow",
+                idempotency_key="synthetic-idempotency",
+                actor_id="synthetic-actor",
+            )
+
+    def test_text_template_fingerprint_remains_backward_compatible(self) -> None:
+        service, _, repository, _, _ = self._service()
+        self._send_template(service)
+        intent = repository.get("synthetic_flow", "synthetic-idempotency")
+        assert intent is not None
+        expected = hashlib.sha256(
+            json.dumps(
+                {
+                    "recipient": SYNTHETIC_RECIPIENT,
+                    "provider_key": "primary",
+                    "operation_kind": "template",
+                    "operation_key": "synthetic_notice",
+                    "message": {
+                        "type": "template",
+                        "template": {
+                            "name": "synthetic_notice_v1",
+                            "language_code": "en_US",
+                        },
+                        "components": [
+                            {
+                                "type": "header",
+                                "parameters": ["header-2", "header-1"],
+                            },
+                            {
+                                "type": "body",
+                                "parameters": ["body-2", "body-1"],
+                            },
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(intent.request_fingerprint, expected)
 
     def test_idempotency_conflicts_cover_recipient_content_template_and_parameters(self) -> None:
         variants: tuple[tuple[str, dict[str, object]], ...] = (

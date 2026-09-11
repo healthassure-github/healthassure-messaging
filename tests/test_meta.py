@@ -12,6 +12,7 @@ from healthassure_messaging import (
     REQUEST_SCHEMA_VERSION,
     ErrorCategory,
     FakeMessagingProvider,
+    ImageParameter,
     MessageRequest,
     MessagingGateway,
     MetaCloudConfig,
@@ -281,6 +282,35 @@ class MetaPayloadTests(unittest.TestCase):
         assert isinstance(template, dict)
         self.assertNotIn("components", template)
 
+    def test_image_header_uses_exact_meta_media_parameter(self) -> None:
+        transport = _RecordingTransport(_success_response())
+        image = ImageParameter(media_id="9988776655")
+        MetaCloudProvider(_config(), transport=transport).send(
+            _template_request(
+                (
+                    TemplateComponent(
+                        component_type=TemplateComponentType.HEADER,
+                        parameters=(image,),
+                    ),
+                )
+            )
+        )
+        self.assertEqual(
+            transport.calls[0].json_body["template"],
+            {
+                "name": "synthetic_template",
+                "language": {"code": "en_US"},
+                "components": [
+                    {
+                        "type": "header",
+                        "parameters": [
+                            {"type": "image", "image": {"id": "9988776655"}}
+                        ],
+                    }
+                ],
+            },
+        )
+
     def test_button_is_rejected_before_http(self) -> None:
         button = TemplateComponent(
             component_type=TemplateComponentType.BUTTON,
@@ -469,11 +499,11 @@ class MetaResponseTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(fallback.received_requests, ())
 
-    def test_request_serialization_contract_remains_version_one(self) -> None:
+    def test_request_serialization_contract_is_version_two(self) -> None:
         serialized = serialize_request(_text_request())
         document = json.loads(serialized)
-        self.assertEqual(REQUEST_SCHEMA_VERSION, 1)
-        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(REQUEST_SCHEMA_VERSION, 2)
+        self.assertEqual(document["schema_version"], 2)
         self.assertEqual(set(document), {"schema_version", "request"})
         self.assertNotIn("meta", serialized.lower())
         self.assertNotIn("access_token", serialized.lower())

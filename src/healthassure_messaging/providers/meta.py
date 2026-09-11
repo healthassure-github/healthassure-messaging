@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from healthassure_messaging.contracts import (
+    ImageParameter,
     MessageRequest,
     NormalizedError,
     SendResult,
@@ -139,7 +140,11 @@ class MetaCloudProvider:
                 {
                     "type": component.component_type.value.lower(),
                     "parameters": [
-                        {"type": "text", "text": parameter.text}
+                        (
+                            {"type": "image", "image": {"id": parameter.media_id}}
+                            if isinstance(parameter, ImageParameter)
+                            else {"type": "text", "text": parameter.text}
+                        )
                         for parameter in component.parameters
                     ],
                 }
