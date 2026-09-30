@@ -1,0 +1,43 @@
+{
+  "artifact_source_commit": "aabe98b753987f255e31197098f529d5e66b03bb",
+  "artifacts": [
+    {
+      "filename": "healthassure_messaging-1.2.0-py3-none-any.whl",
+      "kind": "wheel",
+      "sha256": "e18c13541872590d9a6cfb6785c41efec9bd95f7b92e6d645c296072cabb3ebd",
+      "size": 45485
+    },
+    {
+      "filename": "healthassure_messaging-1.2.0.tar.gz",
+      "kind": "sdist",
+      "sha256": "b71e49660dfc95b706bcdaf78a6ae0472647c430df75acd6a1a2d5be556f5e7c",
+      "size": 90387
+    }
+  ],
+  "dependencies": {
+    "optional": {
+      "dev": [
+        "build>=1.5,<2",
+        "check-wheel-contents>=0.6,<1",
+        "mypy>=2.3,<3",
+        "ruff>=0.16,<0.17",
+        "twine>=6.2,<7",
+        "types-requests>=2.33.0.20260712,<3"
+      ],
+      "mongo": [
+        "pymongo>=4.11.1,<5"
+      ]
+    },
+    "runtime": [
+      "requests>=2.32.3,<3"
+    ]
+  },
+  "distribution": "healthassure-messaging",
+  "import_package": "healthassure_messaging",
+  "manifest_schema_version": 1,
+  "python_requires": ">=3.10,<3.14",
+  "repository": "healthassure-github/healthassure-messaging",
+  "request_schema_version": 3,
+  "tag": "v1.2.0",
+  "version": "1.2.0"
+}
