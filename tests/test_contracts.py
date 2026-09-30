@@ -11,6 +11,7 @@ from healthassure_messaging import (
     NormalizedError,
     SendDisposition,
     SendResult,
+    SensitiveTextParameter,
     TemplateComponent,
     TemplateComponentType,
     TemplateMessage,
@@ -45,6 +46,7 @@ class ContractTests(unittest.TestCase):
             TextMessage,
             TemplateReference,
             TextParameter,
+            SensitiveTextParameter,
             ImageParameter,
             TemplateComponent,
             TemplateMessage,
@@ -62,6 +64,7 @@ class ContractTests(unittest.TestCase):
             lambda: TemplateReference(name="", language_code="en"),
             lambda: TemplateReference(name="appointment", language_code=" "),
             lambda: TextParameter(text=""),
+            lambda: SensitiveTextParameter(text=""),
             lambda: MessageRequest(
                 recipient="+12025550123",
                 message=TextMessage(body="hello"),
@@ -134,6 +137,10 @@ class ContractTests(unittest.TestCase):
             idempotency_key="idempotency-text",
         )
         self.assertIs(request.message, message)
+
+    def test_sensitive_text_is_redacted_from_repr(self) -> None:
+        parameter = SensitiveTextParameter(text="739104")
+        self.assertNotIn("739104", repr(parameter))
 
     def test_template_request_preserves_component_and_parameter_order(self) -> None:
         first = TextParameter(text="first")

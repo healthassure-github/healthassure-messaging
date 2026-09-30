@@ -164,7 +164,7 @@ def blocked(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 builtins.__import__ = blocked
 import healthassure_messaging
-assert healthassure_messaging.REQUEST_SCHEMA_VERSION == 2
+assert healthassure_messaging.REQUEST_SCHEMA_VERSION == 3
 try:
     import healthassure_messaging.persistence.mongo
 except ImportError as error:
@@ -896,6 +896,40 @@ class MongoTemplateCatalogTests(unittest.TestCase):
             text_alias.components[0].parameter_types,
             (TemplateParameterType.TEXT,),
         )
+
+    def test_schema_three_sensitive_copy_code_alias_round_trip(self) -> None:
+        persistence, fake, _ = _persistence()
+        alias = TemplateAlias(
+            key="synthetic-authentication-template",
+            provider_key="meta",
+            template_name="synthetic_authentication_template",
+            language_code="en_US",
+            components=(
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.BODY,
+                    parameter_names=("code",),
+                    parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+                ),
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.BUTTON,
+                    parameter_names=("code",),
+                    parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+                    sub_type="url",
+                    index=0,
+                ),
+            ),
+        )
+        persistence.templates.save(
+            alias,
+            expected_revision=None,
+            actor_id="synthetic-actor",
+            updated_at_epoch=10,
+        )
+        document = fake.collection("messaging_template_aliases").documents[0]
+        self.assertEqual(document["record_schema_version"], 3)
+        self.assertEqual(document["components"][1]["sub_type"], "url")
+        self.assertEqual(document["components"][1]["index"], 0)
+        self.assertEqual(persistence.templates.get(alias.key), alias)
 
 
 class MongoStoredRecordValidationTests(unittest.TestCase):

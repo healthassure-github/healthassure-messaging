@@ -39,6 +39,7 @@ from healthassure_messaging import (
     RecipientEligibility,
     SendDisposition,
     SendResult,
+    SensitiveTextParameter,
     ServiceDependencyError,
     TemplateAlias,
     TemplateComponentSpec,
@@ -278,6 +279,27 @@ def _template_alias(
     )
 
 
+def _authentication_alias() -> TemplateAlias:
+    return _template_alias(
+        key="synthetic_authentication",
+        template_name="synthetic_authentication_v1",
+        components=(
+            TemplateComponentSpec(
+                component_type=TemplateComponentType.BODY,
+                parameter_names=("code",),
+                parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+            ),
+            TemplateComponentSpec(
+                component_type=TemplateComponentType.BUTTON,
+                parameter_names=("code",),
+                parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+                sub_type="url",
+                index=0,
+            ),
+        ),
+    )
+
+
 class MessagingServiceTests(unittest.TestCase):
     def _service(
         self,
@@ -293,6 +315,7 @@ class MessagingServiceTests(unittest.TestCase):
         recipient_policy: _RecordingEligibilityPolicy | None = None,
         events: list[str] | None = None,
         register_provider: bool = True,
+        sensitive_fingerprint_key: bytes | None = b"synthetic-sensitive-key",
     ) -> tuple[
         MessagingService,
         MessagingProvider,
@@ -322,6 +345,7 @@ class MessagingServiceTests(unittest.TestCase):
             text_provider_key="primary",
             correlation_id_factory=correlation_ids,
             intent_id_factory=intent_ids,
+            sensitive_fingerprint_key=sensitive_fingerprint_key,
         )
         return service, selected_provider, selected_repository, correlation_ids, intent_ids
 
@@ -379,7 +403,7 @@ class MessagingServiceTests(unittest.TestCase):
         intent = repository.get("synthetic_flow", "synthetic-idempotency")
         self.assertIsNotNone(intent)
         assert intent is not None
-        self.assertEqual(json.loads(intent.serialized_request)["schema_version"], 2)
+        self.assertEqual(json.loads(intent.serialized_request)["schema_version"], 3)
         self.assertEqual(intent.actor_id, "synthetic-actor")
 
     def test_recipient_is_normalized_before_policy_and_persistence(self) -> None:
@@ -462,7 +486,7 @@ class MessagingServiceTests(unittest.TestCase):
                 intent = repository.get("synthetic_flow", "synthetic-idempotency")
                 assert intent is not None
                 self.assertEqual(intent.state, IntentState.REJECTED)
-                self.assertIn('"schema_version":2', intent.serialized_request)
+                self.assertIn('"schema_version":3', intent.serialized_request)
 
     def test_text_requires_an_active_session(self) -> None:
         inactive, provider, repository, _, _ = self._service(active_sessions=())
@@ -610,7 +634,7 @@ class MessagingServiceTests(unittest.TestCase):
         self.assertEqual(repository.complete_calls, 0)
         intent = repository.get("synthetic_flow", "synthetic-idempotency")
         assert intent is not None
-        self.assertEqual(intent.state, IntentState.DISPATCHING)
+        self.assertEqual(intent.state, IntentState.PENDING)
 
     def test_provider_contract_violations_are_unknown_without_retry(self) -> None:
         cases = (
@@ -757,6 +781,91 @@ class MessagingServiceTests(unittest.TestCase):
                 idempotency_key="synthetic-idempotency",
                 actor_id="synthetic-actor",
             )
+
+    def test_sensitive_code_is_hmac_fingerprinted_redacted_and_replayable(self) -> None:
+        alias = _authentication_alias()
+        service, provider, repository, _, _ = self._service(aliases=(alias,))
+        code = "739104"
+
+        def send(value: str) -> DispatchResult:
+            return service.send_template(
+                recipient=SYNTHETIC_RECIPIENT,
+                template_key=alias.key,
+                parameters={"code": SensitiveTextParameter(text=value)},
+                source_flow="synthetic_flow",
+                idempotency_key="synthetic-idempotency",
+                actor_id="synthetic-actor",
+            )
+
+        first = send(code)
+        replay = send(code)
+
+        self.assertFalse(first.idempotent_replay)
+        self.assertTrue(replay.idempotent_replay)
+        self.assertEqual(len(cast(_RecordingProvider, provider).requests), 1)
+        intent = repository.get("synthetic_flow", "synthetic-idempotency")
+        assert intent is not None
+        self.assertNotIn(code, intent.serialized_request)
+        self.assertNotIn(code, repr(intent))
+        self.assertNotIn(code, intent.request_fingerprint)
+        self.assertEqual(len(intent.request_fingerprint), 64)
+        self.assertEqual(intent.serialized_request.count('"redacted":true'), 2)
+        self.assertNotIn(code, repr(cast(_RecordingProvider, provider).requests[0]))
+
+        with self.assertRaises(IdempotencyConflictError):
+            send("739105")
+        self.assertEqual(len(cast(_RecordingProvider, provider).requests), 1)
+
+    def test_sensitive_pending_intent_cannot_be_rehydrated_or_retried(self) -> None:
+        alias = _authentication_alias()
+        repository = _SkipFirstClaimRepository()
+        service, provider, _, _, _ = self._service(
+            aliases=(alias,),
+            repository=repository,
+        )
+
+        def send() -> DispatchResult:
+            return service.send_template(
+                recipient=SYNTHETIC_RECIPIENT,
+                template_key=alias.key,
+                parameters={"code": SensitiveTextParameter(text="739104")},
+                source_flow="synthetic_flow",
+                idempotency_key="synthetic-idempotency",
+                actor_id="synthetic-actor",
+            )
+
+        with self.assertRaises(IntentInProgressError):
+            send()
+        with self.assertRaisesRegex(
+            ServiceDependencyError,
+            "^stored request could not be restored$",
+        ):
+            send()
+        self.assertEqual(cast(_RecordingProvider, provider).requests, [])
+        pending = repository.get("synthetic_flow", "synthetic-idempotency")
+        assert pending is not None
+        self.assertEqual(pending.state, IntentState.PENDING)
+
+    def test_sensitive_send_requires_a_backend_fingerprint_key(self) -> None:
+        alias = _authentication_alias()
+        service, provider, repository, _, _ = self._service(
+            aliases=(alias,),
+            sensitive_fingerprint_key=None,
+        )
+        with self.assertRaisesRegex(
+            ServiceDependencyError,
+            "^sensitive request fingerprinting is unavailable$",
+        ):
+            service.send_template(
+                recipient=SYNTHETIC_RECIPIENT,
+                template_key=alias.key,
+                parameters={"code": SensitiveTextParameter(text="739104")},
+                source_flow="synthetic_flow",
+                idempotency_key="synthetic-idempotency",
+                actor_id="synthetic-actor",
+            )
+        self.assertEqual(cast(_RecordingProvider, provider).requests, [])
+        self.assertIsNone(repository.get("synthetic_flow", "synthetic-idempotency"))
 
     def test_text_template_fingerprint_remains_backward_compatible(self) -> None:
         service, _, repository, _, _ = self._service()

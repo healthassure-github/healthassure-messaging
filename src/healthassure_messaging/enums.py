@@ -32,6 +32,7 @@ class TemplateComponentType(_StringEnum):
 class TemplateParameterType(_StringEnum):
     TEXT = "text"
     IMAGE = "image"
+    SENSITIVE_TEXT = "sensitive_text"
 
 
 class DeliveryStatus(_StringEnum):

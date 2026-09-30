@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping
 
 from .contracts import (
     ImageParameter,
+    SensitiveTextParameter,
     TemplateComponent,
     TemplateMessage,
     TemplateParameter,
@@ -45,7 +46,7 @@ class InMemoryTemplateCatalog:
 
 def build_template_message(
     alias: TemplateAlias,
-    parameters: Mapping[str, str | ImageParameter],
+    parameters: Mapping[str, str | SensitiveTextParameter | ImageParameter],
 ) -> TemplateMessage:
     """Build ordered typed template parameters without inference or reordering."""
 
@@ -54,13 +55,13 @@ def build_template_message(
     if not isinstance(parameters, Mapping):
         raise TypeError("parameters must be a mapping")
 
-    provided: dict[str, str | ImageParameter] = {}
+    provided: dict[str, str | SensitiveTextParameter | ImageParameter] = {}
     for name, value in parameters.items():
         if not isinstance(name, str) or not name.strip():
             raise TemplateParameterError("template parameter names must be non-empty strings")
         if not (
             (isinstance(value, str) and value.strip())
-            or isinstance(value, ImageParameter)
+            or isinstance(value, (SensitiveTextParameter, ImageParameter))
         ):
             raise TemplateParameterError("template parameter values must be non-empty strings")
         provided[name] = value
@@ -89,6 +90,10 @@ def build_template_message(
                 if not isinstance(value, str):
                     raise TemplateParameterError("template parameter type is invalid")
                 built_parameters.append(TextParameter(text=value))
+            elif parameter_type is TemplateParameterType.SENSITIVE_TEXT:
+                if not isinstance(value, SensitiveTextParameter):
+                    raise TemplateParameterError("template parameter type is invalid")
+                built_parameters.append(value)
             else:
                 if not isinstance(value, ImageParameter):
                     raise TemplateParameterError("template parameter type is invalid")
@@ -97,6 +102,8 @@ def build_template_message(
             TemplateComponent(
                 component_type=component.component_type,
                 parameters=tuple(built_parameters),
+                sub_type=component.sub_type,
+                index=component.index,
             )
         )
     return TemplateMessage(

@@ -26,15 +26,17 @@ class TemplateComponentSpec:
     component_type: TemplateComponentType
     parameter_names: tuple[str, ...]
     parameter_types: tuple[TemplateParameterType, ...] = ()
+    sub_type: str | None = None
+    index: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.component_type, TemplateComponentType):
             raise TypeError("component_type must be a TemplateComponentType")
-        if self.component_type not in (
-            TemplateComponentType.HEADER,
-            TemplateComponentType.BODY,
-        ):
-            raise ValueError("template components support only header and body text parameters")
+        if self.component_type is TemplateComponentType.BUTTON:
+            if self.sub_type != "url" or self.index != 0:
+                raise ValueError("button components require url sub_type at index 0")
+        elif self.sub_type is not None or self.index is not None:
+            raise ValueError("button metadata is only valid for button components")
         if not isinstance(self.parameter_names, tuple):
             raise TypeError("parameter_names must be a tuple")
         if not self.parameter_names:
@@ -62,6 +64,26 @@ class TemplateComponentSpec:
             or len(image_parameters) != 1
         ):
             raise ValueError("image parameters require an exclusive header component")
+        sensitive_parameters = tuple(
+            parameter_type
+            for parameter_type in parameter_types
+            if parameter_type is TemplateParameterType.SENSITIVE_TEXT
+        )
+        if sensitive_parameters and (
+            self.component_type not in (
+                TemplateComponentType.BODY,
+                TemplateComponentType.BUTTON,
+            )
+            or len(parameter_types) != 1
+            or len(sensitive_parameters) != 1
+        ):
+            raise ValueError(
+                "sensitive text parameters require an exclusive body or button component"
+            )
+        if self.component_type is TemplateComponentType.BUTTON and (
+            parameter_types != (TemplateParameterType.SENSITIVE_TEXT,)
+        ):
+            raise ValueError("button components require one sensitive text parameter")
         object.__setattr__(self, "parameter_types", parameter_types)
 
 

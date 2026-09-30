@@ -8,5 +8,5 @@ class DistributionTests(unittest.TestCase):
     def test_typed_package_marker_is_available(self) -> None:
         self.assertTrue(files("healthassure_messaging").joinpath("py.typed").is_file())
 
-    def test_request_schema_version_is_two(self) -> None:
-        self.assertEqual(REQUEST_SCHEMA_VERSION, 2)
+    def test_request_schema_version_is_three(self) -> None:
+        self.assertEqual(REQUEST_SCHEMA_VERSION, 3)

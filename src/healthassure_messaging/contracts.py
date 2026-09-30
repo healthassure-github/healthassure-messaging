@@ -85,6 +85,16 @@ class TextParameter:
 
 
 @dataclass(frozen=True, slots=True)
+class SensitiveTextParameter:
+    """One send-time text value whose representation and persistence are redacted."""
+
+    text: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_non_empty_text(self.text, "text")
+
+
+@dataclass(frozen=True, slots=True)
 class ImageParameter:
     media_id: str = field(repr=False)
 
@@ -96,13 +106,15 @@ class ImageParameter:
             raise ValueError("media_id must be a Meta media identifier")
 
 
-TemplateParameter = TextParameter | ImageParameter
+TemplateParameter = TextParameter | SensitiveTextParameter | ImageParameter
 
 
 @dataclass(frozen=True, slots=True)
 class TemplateComponent:
     component_type: TemplateComponentType
     parameters: tuple[TemplateParameter, ...]
+    sub_type: str | None = None
+    index: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.component_type, TemplateComponentType):
@@ -110,10 +122,15 @@ class TemplateComponent:
         if not isinstance(self.parameters, tuple):
             raise TypeError("parameters must be a tuple")
         if not all(
-            isinstance(parameter, (TextParameter, ImageParameter))
+            isinstance(parameter, (TextParameter, SensitiveTextParameter, ImageParameter))
             for parameter in self.parameters
         ):
             raise TypeError("parameters must contain only template parameter values")
+        if self.component_type is TemplateComponentType.BUTTON:
+            if (self.sub_type, self.index) not in {(None, None), ("url", 0)}:
+                raise ValueError("button components require url sub_type at index 0")
+        elif self.sub_type is not None or self.index is not None:
+            raise ValueError("button metadata is only valid for button components")
         image_parameters = tuple(
             parameter
             for parameter in self.parameters

@@ -6,7 +6,7 @@ consent and session policy ports, idempotent dispatch state, and optional Mongo
 persistence. A Meta Cloud API provider and Meta delivery-webhook parser are
 included.
 
-Stable version 1.1.0 requires Python 3.10 through 3.13.
+Stable version 1.2.0 requires Python 3.10 through 3.13.
 
 ## Installation
 
@@ -35,8 +35,11 @@ from healthassure_messaging import (
 Applications supply policy, session, template, and intent ports to
 `MessagingService`. Provider selection is explicit: the service does not retry
 or fall back to another provider automatically. Requests are serialized with
-schema version `2` before a claimed dispatch. Schema-version-1 requests remain
-strictly readable for persisted compatibility.
+schema version `3` before a claimed dispatch. Schema-version-1 and -2 requests
+remain strictly readable for persisted compatibility. Sensitive template text
+is represented only by a redacted marker in serialized requests and a
+domain-separated keyed fingerprint in intent records; pending sensitive sends
+cannot be rehydrated or retried.
 
 The optional `MongoMessagingPersistence` accepts a caller-owned PyMongo
 `Database` handle. It never creates a client, loads credentials, reads settings,

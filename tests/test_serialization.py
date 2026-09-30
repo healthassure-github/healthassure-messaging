@@ -8,6 +8,8 @@ from healthassure_messaging import (
     ImageParameter,
     MessageRequest,
     RequestSerializationError,
+    SensitiveRequestUnavailableError,
+    SensitiveTextParameter,
     TemplateComponent,
     TemplateComponentType,
     TemplateMessage,
@@ -49,6 +51,8 @@ def _template_request() -> MessageRequest:
                 TemplateComponent(
                     component_type=TemplateComponentType.BUTTON,
                     parameters=(TextParameter(text="button-1"),),
+                    sub_type="url",
+                    index=0,
                 ),
             ),
         ),
@@ -95,7 +99,9 @@ class SerializationTests(unittest.TestCase):
         self.assertNotIn("credential", serialized.lower())
         self.assertNotIn("provider_config", serialized.lower())
 
-    def test_schema_two_image_round_trip_is_deterministic_and_redacted_by_repr(self) -> None:
+    def test_schema_two_image_requests_remain_readable_and_schema_three_is_deterministic(
+        self,
+    ) -> None:
         request = MessageRequest(
             recipient="+12025550123",
             message=TemplateMessage(
@@ -112,23 +118,68 @@ class SerializationTests(unittest.TestCase):
         )
         payload = serialize_request(request)
         self.assertEqual(serialize_request(deserialize_request(payload)), payload)
-        self.assertEqual(json.loads(payload)["schema_version"], 2)
+        self.assertEqual(json.loads(payload)["schema_version"], 3)
         decoded = deserialize_request(payload)
         self.assertNotIn("9988776655", repr(decoded))
+        schema_two = json.loads(payload)
+        schema_two["schema_version"] = 2
+        self.assertEqual(deserialize_request(json.dumps(schema_two)), request)
 
     def test_schema_one_text_and_template_requests_remain_strictly_readable(self) -> None:
         for request in (_text_request(), _template_request()):
             parsed = json.loads(serialize_request(request))
             parsed["schema_version"] = 1
-            self.assertEqual(deserialize_request(json.dumps(parsed)), request)
+            for component in parsed["request"]["message"].get("components", []):
+                component.pop("sub_type", None)
+                component.pop("index", None)
+            decoded = deserialize_request(json.dumps(parsed))
+            self.assertEqual(decoded.recipient, request.recipient)
+            self.assertEqual(decoded.correlation_id, request.correlation_id)
+            self.assertEqual(decoded.idempotency_key, request.idempotency_key)
+            if isinstance(decoded.message, TemplateMessage):
+                self.assertIsNone(decoded.message.components[-1].sub_type)
+                self.assertIsNone(decoded.message.components[-1].index)
+            else:
+                self.assertEqual(decoded, request)
 
     def test_unsupported_schema_versions_are_rejected(self) -> None:
         parsed = json.loads(serialize_request(_text_request()))
-        for version in (0, 3, True, "1"):
+        for version in (0, 4, True, "1"):
             with self.subTest(version=version):
                 parsed["schema_version"] = version
                 with self.assertRaises(UnsupportedSchemaVersionError):
                     deserialize_request(json.dumps(parsed))
+
+    def test_sensitive_request_serialization_is_redacted_and_not_rehydratable(self) -> None:
+        code = "739104"
+        request = MessageRequest(
+            recipient="+12025550123",
+            message=TemplateMessage(
+                template=TemplateReference(name="authentication", language_code="en_US"),
+                components=(
+                    TemplateComponent(
+                        component_type=TemplateComponentType.BODY,
+                        parameters=(SensitiveTextParameter(text=code),),
+                    ),
+                    TemplateComponent(
+                        component_type=TemplateComponentType.BUTTON,
+                        parameters=(SensitiveTextParameter(text=code),),
+                        sub_type="url",
+                        index=0,
+                    ),
+                ),
+            ),
+            correlation_id="correlation-sensitive",
+            idempotency_key="idempotency-sensitive",
+        )
+        payload = serialize_request(request)
+        self.assertNotIn(code, payload)
+        self.assertEqual(payload.count('"redacted":true'), 2)
+        with self.assertRaisesRegex(
+            SensitiveRequestUnavailableError,
+            "^sensitive request data is unavailable$",
+        ):
+            deserialize_request(payload)
 
     def test_unknown_message_type_is_rejected(self) -> None:
         parsed = json.loads(serialize_request(_text_request()))

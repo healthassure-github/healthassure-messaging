@@ -65,7 +65,11 @@ def public_source_files(project_root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
         selected.extend(
             path
             for path in source_root.rglob("*")
-            if path.is_file() and path.suffix in PUBLIC_TEXT_SUFFIXES
+            if (
+                path.is_file()
+                and not path.name.startswith(".")
+                and path.suffix in PUBLIC_TEXT_SUFFIXES
+            )
         )
     return tuple(sorted(selected))
 

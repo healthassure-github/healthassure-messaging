@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from collections.abc import Callable, Mapping
@@ -12,6 +13,7 @@ from .contracts import (
     MessageRequest,
     NormalizedError,
     SendResult,
+    SensitiveTextParameter,
     TextMessage,
 )
 from .enums import ErrorCategory, IntentState, SendDisposition
@@ -76,6 +78,17 @@ def _message_fingerprint_data(message: Message) -> dict[str, object]:
     }
 
 
+_SENSITIVE_FINGERPRINT_DOMAIN = b"healthassure-messaging:sensitive-request:v1\0"
+
+
+def _message_contains_sensitive_data(message: Message) -> bool:
+    return not isinstance(message, TextMessage) and any(
+        isinstance(parameter, SensitiveTextParameter)
+        for component in message.components
+        for parameter in component.parameters
+    )
+
+
 def _request_fingerprint(
     *,
     recipient: str,
@@ -83,6 +96,7 @@ def _request_fingerprint(
     message: Message,
     operation_kind: str,
     operation_key: str,
+    sensitive_fingerprint_key: bytes | None,
 ) -> str:
     encoded = json.dumps(
         {
@@ -96,6 +110,16 @@ def _request_fingerprint(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+    if _message_contains_sensitive_data(message):
+        if sensitive_fingerprint_key is None:
+            raise ServiceDependencyError(
+                "sensitive request fingerprinting is unavailable"
+            ) from None
+        return hmac.new(
+            sensitive_fingerprint_key,
+            _SENSITIVE_FINGERPRINT_DOMAIN + encoded,
+            hashlib.sha256,
+        ).hexdigest()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -114,6 +138,7 @@ class MessagingService:
         default_region: str | None = None,
         correlation_id_factory: Callable[[], str] = _new_identifier,
         intent_id_factory: Callable[[], str] = _new_identifier,
+        sensitive_fingerprint_key: bytes | None = None,
     ) -> None:
         if not isinstance(gateway, MessagingGateway):
             raise TypeError("gateway must be a MessagingGateway")
@@ -132,13 +157,19 @@ class MessagingService:
             raise TypeError("intent_id_factory must be callable")
         self._correlation_id_factory = correlation_id_factory
         self._intent_id_factory = intent_id_factory
+        if sensitive_fingerprint_key is not None and (
+            type(sensitive_fingerprint_key) is not bytes
+            or not sensitive_fingerprint_key
+        ):
+            raise ValueError("sensitive_fingerprint_key must be non-empty bytes")
+        self._sensitive_fingerprint_key = sensitive_fingerprint_key
 
     def send_template(
         self,
         *,
         recipient: str,
         template_key: str,
-        parameters: Mapping[str, str | ImageParameter],
+        parameters: Mapping[str, str | SensitiveTextParameter | ImageParameter],
         source_flow: str,
         idempotency_key: str,
         actor_id: str,
@@ -221,6 +252,7 @@ class MessagingService:
             message=message,
             operation_kind=operation_kind,
             operation_key=operation_key,
+            sensitive_fingerprint_key=self._sensitive_fingerprint_key,
         )
 
         existing = self._get_intent(source_flow, idempotency_key)
@@ -259,6 +291,11 @@ class MessagingService:
             request_fingerprint=fingerprint,
             recipient=recipient,
             text_purpose_key=text_purpose_key,
+            transient_request=(
+                request
+                if creation.created and _message_contains_sensitive_data(message)
+                else None
+            ),
         )
 
     def _continue_intent(
@@ -268,6 +305,7 @@ class MessagingService:
         request_fingerprint: str,
         recipient: str,
         text_purpose_key: str | None,
+        transient_request: MessageRequest | None = None,
     ) -> DispatchResult:
         if intent.request_fingerprint != request_fingerprint:
             raise IdempotencyConflictError("idempotency scope is already used by another request")
@@ -282,13 +320,21 @@ class MessagingService:
         if intent.state is not IntentState.PENDING:
             raise IntentStateError("intent has an unsupported state")
 
+        if transient_request is None:
+            try:
+                transient_request = deserialize_request(intent.serialized_request)
+            except Exception:
+                raise ServiceDependencyError(
+                    "stored request could not be restored"
+                ) from None
+
         if not self._is_policy_eligible(recipient, text_purpose_key):
             return self._complete_local_rejection(intent)
 
         claimed = self._claim_intent(intent.intent_id)
         if claimed is None:
             return self._resolve_claim_race(intent)
-        return self._dispatch_claimed(claimed)
+        return self._dispatch_claimed(claimed, transient_request)
 
     def _is_policy_eligible(self, recipient: str, text_purpose_key: str | None) -> bool:
         try:
@@ -336,12 +382,9 @@ class MessagingService:
         assert completed.result is not None
         return completed.result
 
-    def _dispatch_claimed(self, intent: MessageIntent) -> DispatchResult:
-        try:
-            request = deserialize_request(intent.serialized_request)
-        except Exception:
-            raise ServiceDependencyError("stored request could not be restored") from None
-
+    def _dispatch_claimed(
+        self, intent: MessageIntent, request: MessageRequest
+    ) -> DispatchResult:
         provider_invoked = False
         try:
             provider_result = self._gateway.send(

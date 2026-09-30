@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-09-30
+
+- Add schema-3 authentication-template copy-code dispatch with explicit button
+  metadata and redacted sensitive text parameters.
+- Preserve strict request-schema-1/2 and template-alias-schema-1/2 readability.
+
 ## 1.1.0 - 2026-09-10
 
 - Add typed image-header template parameters with request schema 2.

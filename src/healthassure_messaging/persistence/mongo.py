@@ -41,7 +41,8 @@ from ..service_contracts import (
 )
 
 MONGO_RECORD_SCHEMA_VERSION: Final[int] = 1
-TEMPLATE_ALIAS_SCHEMA_VERSION: Final[int] = 2
+_IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION: Final[int] = 2
+TEMPLATE_ALIAS_SCHEMA_VERSION: Final[int] = 3
 _MAX_RECOVERY_LIMIT: Final[int] = 1_000
 _COLLECTION_PREFIX_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_]+")
 _Document = dict[str, Any]
@@ -1041,15 +1042,21 @@ class MongoTextSessionPolicy:
 
 
 def _alias_fields(alias: TemplateAlias) -> _Document:
-    schema_version = (
-        TEMPLATE_ALIAS_SCHEMA_VERSION
-        if any(
-            parameter_type is TemplateParameterType.IMAGE
-            for component in alias.components
-            for parameter_type in component.parameter_types
-        )
-        else MONGO_RECORD_SCHEMA_VERSION
+    parameter_types = tuple(
+        parameter_type
+        for component in alias.components
+        for parameter_type in component.parameter_types
     )
+    contains_button = any(
+        component.component_type is TemplateComponentType.BUTTON
+        for component in alias.components
+    )
+    if contains_button or TemplateParameterType.SENSITIVE_TEXT in parameter_types:
+        schema_version = TEMPLATE_ALIAS_SCHEMA_VERSION
+    elif TemplateParameterType.IMAGE in parameter_types:
+        schema_version = _IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION
+    else:
+        schema_version = MONGO_RECORD_SCHEMA_VERSION
     return {
         "record_schema_version": schema_version,
         "template_key": alias.key,
@@ -1067,7 +1074,15 @@ def _alias_fields(alias: TemplateAlias) -> _Document:
                             for parameter_type in component.parameter_types
                         ]
                     }
-                    if schema_version == TEMPLATE_ALIAS_SCHEMA_VERSION
+                    if schema_version in {
+                        _IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION,
+                        TEMPLATE_ALIAS_SCHEMA_VERSION,
+                    }
+                    else {}
+                ),
+                **(
+                    {"sub_type": component.sub_type, "index": component.index}
+                    if component.component_type is TemplateComponentType.BUTTON
                     else {}
                 ),
             }
@@ -1081,6 +1096,7 @@ def _alias_from_document(value: object) -> TemplateAlias:
     schema_version = document.get("record_schema_version")
     if type(schema_version) is not int or schema_version not in {
         MONGO_RECORD_SCHEMA_VERSION,
+        _IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION,
         TEMPLATE_ALIAS_SCHEMA_VERSION,
     }:
         raise _record_error()
@@ -1116,13 +1132,30 @@ def _alias_from_document(value: object) -> TemplateAlias:
                     TemplateParameterType(_require_text(item, "parameter type"))
                     for item in raw_parameter_types
                 )
+            raw_sub_type = component.get("sub_type")
+            raw_index = component.get("index")
+            component_type = TemplateComponentType(
+                _doc_text(component, "component_type")
+            )
+            if component_type is TemplateComponentType.BUTTON:
+                if schema_version != TEMPLATE_ALIAS_SCHEMA_VERSION:
+                    raise _record_error()
+                sub_type = _require_text(raw_sub_type, "button sub_type")
+                if type(raw_index) is not int:
+                    raise _record_error()
+                index = raw_index
+            else:
+                if raw_sub_type is not None or raw_index is not None:
+                    raise _record_error()
+                sub_type = None
+                index = None
             components.append(
                 TemplateComponentSpec(
-                    component_type=TemplateComponentType(
-                        _doc_text(component, "component_type")
-                    ),
+                    component_type=component_type,
                     parameter_names=tuple(cast(list[str], names)),
                     parameter_types=parameter_types,
+                    sub_type=sub_type,
+                    index=index,
                 )
             )
         alias = TemplateAlias(
@@ -1137,7 +1170,23 @@ def _alias_from_document(value: object) -> TemplateAlias:
             for component in alias.components
             for parameter_type in component.parameter_types
         )
-        if (schema_version == TEMPLATE_ALIAS_SCHEMA_VERSION) is not contains_image:
+        contains_sensitive = any(
+            parameter_type is TemplateParameterType.SENSITIVE_TEXT
+            for component in alias.components
+            for parameter_type in component.parameter_types
+        )
+        contains_button = any(
+            component.component_type is TemplateComponentType.BUTTON
+            for component in alias.components
+        )
+        if (
+            (schema_version == MONGO_RECORD_SCHEMA_VERSION)
+            is not (not contains_image and not contains_sensitive and not contains_button)
+            or (schema_version == _IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION)
+            is not (contains_image and not contains_sensitive and not contains_button)
+            or (schema_version == TEMPLATE_ALIAS_SCHEMA_VERSION)
+            is not (contains_sensitive and contains_button and not contains_image)
+        ):
             raise _record_error()
         return alias
 
@@ -1202,6 +1251,7 @@ class MongoTemplateCatalog:
                     "record_schema_version": {
                         "$in": [
                             MONGO_RECORD_SCHEMA_VERSION,
+                            _IMAGE_TEMPLATE_ALIAS_SCHEMA_VERSION,
                             TEMPLATE_ALIAS_SCHEMA_VERSION,
                         ]
                     },

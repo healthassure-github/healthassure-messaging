@@ -27,20 +27,20 @@ from healthassure_messaging.providers.meta import MetaCloudProvider
 
 
 class BehavioralEquivalenceTests(unittest.TestCase):
-    def test_schema_two_serialization_is_byte_exact(self) -> None:
+    def test_schema_three_serialization_is_byte_exact(self) -> None:
         request = MessageRequest(
             recipient="+12025550123",
             message=TextMessage(body="Synthetic message"),
             correlation_id="correlation-1",
             idempotency_key="idempotency-1",
         )
-        self.assertEqual(REQUEST_SCHEMA_VERSION, 2)
+        self.assertEqual(REQUEST_SCHEMA_VERSION, 3)
         self.assertEqual(
             serialize_request(request),
             '{"request":{"correlation_id":"correlation-1",'
             '"idempotency_key":"idempotency-1",'
             '"message":{"body":"Synthetic message","type":"text"},'
-            '"recipient":"+12025550123"},"schema_version":2}',
+            '"recipient":"+12025550123"},"schema_version":3}',
         )
 
     def test_meta_text_payload_preserves_exact_protocol_values(self) -> None:

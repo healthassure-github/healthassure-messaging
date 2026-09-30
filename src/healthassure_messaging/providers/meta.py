@@ -127,6 +127,7 @@ class MetaCloudProvider:
 
         if any(
             component.component_type is TemplateComponentType.BUTTON
+            and (component.sub_type != "url" or component.index != 0)
             for component in request.message.components
         ):
             return None
@@ -139,6 +140,14 @@ class MetaCloudProvider:
             template_payload["components"] = [
                 {
                     "type": component.component_type.value.lower(),
+                    **(
+                        {
+                            "sub_type": component.sub_type,
+                            "index": str(component.index),
+                        }
+                        if component.component_type is TemplateComponentType.BUTTON
+                        else {}
+                    ),
                     "parameters": [
                         (
                             {"type": "image", "image": {"id": parameter.media_id}}

@@ -7,6 +7,7 @@ from typing import NoReturn, cast
 from .contracts import (
     ImageParameter,
     MessageRequest,
+    SensitiveTextParameter,
     TemplateComponent,
     TemplateMessage,
     TemplateReference,
@@ -15,8 +16,9 @@ from .contracts import (
 )
 from .enums import TemplateComponentType
 
-REQUEST_SCHEMA_VERSION = 2
+REQUEST_SCHEMA_VERSION = 3
 _LEGACY_REQUEST_SCHEMA_VERSION = 1
+_IMAGE_REQUEST_SCHEMA_VERSION = 2
 
 
 class RequestSerializationError(ValueError):
@@ -25,6 +27,10 @@ class RequestSerializationError(ValueError):
 
 class UnsupportedSchemaVersionError(RequestSerializationError):
     """Raised when a request envelope uses an unsupported schema version."""
+
+
+class SensitiveRequestUnavailableError(RequestSerializationError):
+    """A redacted sensitive request cannot be restored for another dispatch."""
 
 
 def _message_to_data(message: TextMessage | TemplateMessage) -> dict[str, object]:
@@ -40,11 +46,20 @@ def _message_to_data(message: TextMessage | TemplateMessage) -> dict[str, object
         "components": [
             {
                 "type": component.component_type.value,
+                **(
+                    {"sub_type": component.sub_type, "index": component.index}
+                    if component.component_type is TemplateComponentType.BUTTON
+                    else {}
+                ),
                 "parameters": [
                     (
                         {"type": "image", "media_id": parameter.media_id}
                         if isinstance(parameter, ImageParameter)
-                        else {"type": "text", "text": parameter.text}
+                        else (
+                            {"type": "sensitive_text", "redacted": True}
+                            if isinstance(parameter, SensitiveTextParameter)
+                            else {"type": "text", "text": parameter.text}
+                        )
                     )
                     for parameter in component.parameters
                 ],
@@ -112,16 +127,34 @@ def _expect_exact_keys(
 
 
 def _parse_component(value: object, *, schema_version: int) -> TemplateComponent:
-    component = _expect_exact_keys(
-        _expect_object(value, "template component"),
-        {"type", "parameters"},
-        "template component",
-    )
-    component_type_value = _expect_string(component["type"], "template component type")
+    component = _expect_object(value, "template component")
+    component_type_value = _expect_string(component.get("type"), "template component type")
     try:
         component_type = TemplateComponentType(component_type_value)
     except ValueError as error:
         raise RequestSerializationError("unknown template component type") from error
+
+    index: int | None
+    if component_type is TemplateComponentType.BUTTON:
+        if schema_version != REQUEST_SCHEMA_VERSION:
+            _expect_exact_keys(component, {"type", "parameters"}, "template component")
+            sub_type = None
+            index = None
+        else:
+            _expect_exact_keys(
+                component,
+                {"type", "sub_type", "index", "parameters"},
+                "template component",
+            )
+            sub_type = _expect_string(component["sub_type"], "button sub_type")
+            raw_index = component["index"]
+            if type(raw_index) is not int:
+                raise RequestSerializationError("button index must be an integer")
+            index = raw_index
+    else:
+        _expect_exact_keys(component, {"type", "parameters"}, "template component")
+        sub_type = None
+        index = None
 
     parameters: list[TextParameter | ImageParameter] = []
     for raw_parameter in _expect_list(component["parameters"], "template parameters"):
@@ -132,17 +165,32 @@ def _parse_component(value: object, *, schema_version: int) -> TemplateComponent
             parameters.append(
                 TextParameter(text=_expect_string(parameter["text"], "parameter text"))
             )
-        elif parameter_type == "image" and schema_version == REQUEST_SCHEMA_VERSION:
+        elif parameter_type == "image" and schema_version in {
+            _IMAGE_REQUEST_SCHEMA_VERSION,
+            REQUEST_SCHEMA_VERSION,
+        }:
             _expect_exact_keys(parameter, {"type", "media_id"}, "template parameter")
             parameters.append(
                 ImageParameter(
                     media_id=_expect_string(parameter["media_id"], "parameter media_id")
                 )
             )
+        elif parameter_type == "sensitive_text" and schema_version == REQUEST_SCHEMA_VERSION:
+            _expect_exact_keys(parameter, {"type", "redacted"}, "template parameter")
+            if parameter["redacted"] is not True:
+                raise RequestSerializationError("sensitive template parameter is invalid")
+            raise SensitiveRequestUnavailableError(
+                "sensitive request data is unavailable"
+            ) from None
         else:
             raise RequestSerializationError("unknown template parameter type")
 
-    return TemplateComponent(component_type=component_type, parameters=tuple(parameters))
+    return TemplateComponent(
+        component_type=component_type,
+        parameters=tuple(parameters),
+        sub_type=sub_type,
+        index=index,
+    )
 
 
 def _parse_message(value: object, *, schema_version: int) -> TextMessage | TemplateMessage:
@@ -200,6 +248,7 @@ def deserialize_request(payload: str | bytes) -> MessageRequest:
     schema_version = envelope["schema_version"]
     if type(schema_version) is not int or schema_version not in {
         _LEGACY_REQUEST_SCHEMA_VERSION,
+        _IMAGE_REQUEST_SCHEMA_VERSION,
         REQUEST_SCHEMA_VERSION,
     }:
         raise UnsupportedSchemaVersionError("unsupported request schema version")

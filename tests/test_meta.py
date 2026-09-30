@@ -19,6 +19,7 @@ from healthassure_messaging import (
     MetaCloudProvider,
     ProviderRegistry,
     SendDisposition,
+    SensitiveTextParameter,
     TemplateComponent,
     TemplateComponentType,
     TemplateMessage,
@@ -311,7 +312,46 @@ class MetaPayloadTests(unittest.TestCase):
             },
         )
 
-    def test_button_is_rejected_before_http(self) -> None:
+    def test_copy_code_authentication_payload_repeats_sensitive_code_exactly(self) -> None:
+        code = "739104"
+        transport = _RecordingTransport(_success_response())
+        MetaCloudProvider(_config(), transport=transport).send(
+            _template_request(
+                (
+                    TemplateComponent(
+                        component_type=TemplateComponentType.BODY,
+                        parameters=(SensitiveTextParameter(text=code),),
+                    ),
+                    TemplateComponent(
+                        component_type=TemplateComponentType.BUTTON,
+                        parameters=(SensitiveTextParameter(text=code),),
+                        sub_type="url",
+                        index=0,
+                    ),
+                )
+            )
+        )
+        self.assertEqual(
+            transport.calls[0].json_body["template"],
+            {
+                "name": "synthetic_template",
+                "language": {"code": "en_US"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": code}],
+                    },
+                    {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "0",
+                        "parameters": [{"type": "text", "text": code}],
+                    },
+                ],
+            },
+        )
+
+    def test_legacy_button_without_metadata_is_rejected_before_http(self) -> None:
         button = TemplateComponent(
             component_type=TemplateComponentType.BUTTON,
             parameters=(TextParameter(text="unsupported"),),
@@ -499,11 +539,11 @@ class MetaResponseTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(fallback.received_requests, ())
 
-    def test_request_serialization_contract_is_version_two(self) -> None:
+    def test_request_serialization_contract_is_version_three(self) -> None:
         serialized = serialize_request(_text_request())
         document = json.loads(serialized)
-        self.assertEqual(REQUEST_SCHEMA_VERSION, 2)
-        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(REQUEST_SCHEMA_VERSION, 3)
+        self.assertEqual(document["schema_version"], 3)
         self.assertEqual(set(document), {"schema_version", "request"})
         self.assertNotIn("meta", serialized.lower())
         self.assertNotIn("access_token", serialized.lower())

@@ -17,6 +17,7 @@ from healthassure_messaging import (
     MissingTemplateParameterError,
     RecipientEligibility,
     SendDisposition,
+    SensitiveTextParameter,
     TemplateAlias,
     TemplateComponentSpec,
     TemplateComponentType,
@@ -213,12 +214,51 @@ class TemplateServiceContractTests(unittest.TestCase):
         with self.assertRaises(DuplicateTemplateAliasError):
             InMemoryTemplateCatalog((alias, alias))
 
-    def test_button_component_spec_is_not_supported(self) -> None:
-        with self.assertRaises(ValueError):
-            TemplateComponentSpec(
-                component_type=TemplateComponentType.BUTTON,
-                parameter_names=("button",),
-            )
+    def test_sensitive_code_maps_to_body_and_copy_code_button(self) -> None:
+        alias = TemplateAlias(
+            key="synthetic_authentication",
+            provider_key="meta",
+            template_name="synthetic_authentication_v1",
+            language_code="en_US",
+            components=(
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.BODY,
+                    parameter_names=("code",),
+                    parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+                ),
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.BUTTON,
+                    parameter_names=("code",),
+                    parameter_types=(TemplateParameterType.SENSITIVE_TEXT,),
+                    sub_type="url",
+                    index=0,
+                ),
+            ),
+        )
+        code = SensitiveTextParameter(text="739104")
+        message = build_template_message(alias, {"code": code})
+        self.assertIs(message.components[0].parameters[0], code)
+        self.assertIs(message.components[1].parameters[0], code)
+        self.assertEqual(message.components[1].sub_type, "url")
+        self.assertEqual(message.components[1].index, 0)
+        with self.assertRaises(TemplateParameterError):
+            build_template_message(alias, {"code": "739104"})
+
+    def test_button_component_spec_requires_fixed_sensitive_metadata(self) -> None:
+        for values in (
+            (None, None, ()),
+            ("quick_reply", 0, (TemplateParameterType.SENSITIVE_TEXT,)),
+            ("url", 1, (TemplateParameterType.SENSITIVE_TEXT,)),
+            ("url", 0, (TemplateParameterType.TEXT,)),
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                TemplateComponentSpec(
+                    component_type=TemplateComponentType.BUTTON,
+                    parameter_names=("code",),
+                    sub_type=values[0],
+                    index=values[1],
+                    parameter_types=values[2],
+                )
 
     def test_component_spec_requires_the_enum_type(self) -> None:
         with self.assertRaises(TypeError):
